@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "SEAL Hackathon",
+    "slug": "seal-hackathon",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "sealhackathon",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.seal.hackathon"
+    },
+    "android": {
+      "package": "com.seal.hackathon",
+      "adaptiveIcon": {
+        "backgroundColor": "#0A0F1E",
+        "foregroundImage": "./assets/adaptive-icon.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
+  }
+}
