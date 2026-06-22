@@ -65,6 +65,18 @@ const roundSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    coding_duration_hours: {
+      type: Number,
+      default: 24,
+    },
+    top_n_advance: {
+      type: Number,
+      default: 10,
+    },
+    wildcard_enabled: {
+      type: Boolean,
+      default: false,
+    },
   }
 );
 
@@ -125,6 +137,14 @@ const contestSchema = new mongoose.Schema(
     max_teams_per_pool: {
       type: Number,
       default: 10,
+    },
+    wildcard_enabled: {
+      type: Boolean,
+      default: false,
+    },
+    individual_ranking_enabled: {
+      type: Boolean,
+      default: false,
     },
   },
   {
