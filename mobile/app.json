@@ -13,6 +13,7 @@
     },
     "android": {
       "package": "com.seal.hackathon",
+      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "backgroundColor": "#0A0F1E",
         "foregroundImage": "./assets/adaptive-icon.png"
@@ -20,9 +21,6 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    },
-    "plugins": [
-      "expo-secure-store"
-    ]
+    }
   }
 }

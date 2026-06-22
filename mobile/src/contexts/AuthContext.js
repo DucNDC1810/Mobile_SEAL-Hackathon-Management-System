@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as WebBrowser from 'expo-web-browser';
+import * as AuthSession from 'expo-auth-session';
 import { authApi } from '../api/endpoints';
 import { BASE_URL } from '../api/client';
 
@@ -55,11 +56,17 @@ export const AuthProvider = ({ children }) => {
   const signInWithGoogle = useCallback(async () => {
     setAuthError(null);
     try {
+      // Create a dynamic redirect URI that works in Expo Go, Dev Client, and Production
+      const redirectUri = AuthSession.makeRedirectUri({
+        scheme: 'sealhackathon',
+        path: 'oauth'
+      });
+      
       // Open the backend Google OAuth endpoint in a browser
-      const authUrl = `${BASE_URL}/api/auth/google?mobile=true`;
+      const authUrl = `${BASE_URL}/api/auth/google?mobile=true&redirectUri=${encodeURIComponent(redirectUri)}`;
       const result = await WebBrowser.openAuthSessionAsync(
         authUrl,
-        'sealhackathon://oauth'
+        redirectUri
       );
       if (result.type === 'success' && result.url) {
         // Parse tokens from redirect URL query params

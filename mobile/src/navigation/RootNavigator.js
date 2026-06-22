@@ -1,5 +1,5 @@
 import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAuth } from '../contexts/AuthContext';
 import { View, ActivityIndicator } from 'react-native';
@@ -33,8 +33,9 @@ export default function RootNavigator() {
   return (
     <NavigationContainer
       theme={{
-        dark: true,
+        ...DarkTheme,
         colors: {
+          ...DarkTheme.colors,
           primary: colors.brand.primary,
           background: colors.bg.primary,
           card: colors.bg.secondary,
