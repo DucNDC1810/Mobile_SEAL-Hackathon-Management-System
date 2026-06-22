@@ -77,6 +77,7 @@ function InfoRow({ icon, label, value }) {
 export default function StudentHomeScreen() {
   const { user } = useAuth();
   const [contests,   setContests]   = useState([]);
+  const [myTeams,    setMyTeams]    = useState([]);
   const [myTeam,     setMyTeam]     = useState(null);
   const [activeContest, setActiveContest] = useState(null);
   const [loading,    setLoading]    = useState(true);
@@ -88,18 +89,37 @@ export default function StudentHomeScreen() {
 
   const fetchData = useCallback(async () => {
     try {
-      const cRes = await contestApi.getAll();
-      const allContests = cRes.data?.data ?? cRes.data ?? [];
-      setContests(allContests);
+      const [cRes, tRes] = await Promise.allSettled([
+        contestApi.getAll(),
+        teamApi.getMyTeams(),
+      ]);
 
-      // Find an open contest where user has a team
-      const openContest = allContests.find(c => c.status === 'open');
-      if (openContest) {
-        setActiveContest(openContest);
-        try {
-          const tRes = await teamApi.getMyTeamInContest(openContest._id);
-          setMyTeam(tRes.data?.data ?? null);
-        } catch (_) {}
+      // All open contests (for the list section)
+      const allContests = cRes.status === 'fulfilled'
+        ? (cRes.value.data?.data ?? cRes.value.data ?? [])
+        : [];
+      const openContests = allContests.filter(c => c.status === 'open');
+      setContests(openContests);
+
+      // My teams — /teams/me populates contest_id as object { _id, title, status, ... }
+      const rawTeams = tRes.status === 'fulfilled' ? tRes.value.data : [];
+      const myTeamList = Array.isArray(rawTeams) ? rawTeams : (rawTeams?.data ?? []);
+      setMyTeams(myTeamList);
+
+      // Active contest = first open contest I have a team in
+      const myContestIds = new Set(
+        myTeamList.map(t => (t.contest_id?._id ?? t.contest_id)?.toString())
+      );
+      const activeC = openContests.find(c => myContestIds.has(c._id?.toString())) ?? null;
+      setActiveContest(activeC);
+
+      if (activeC) {
+        const found = myTeamList.find(
+          t => (t.contest_id?._id ?? t.contest_id)?.toString() === activeC._id?.toString()
+        );
+        setMyTeam(found ?? null);
+      } else {
+        setMyTeam(null);
       }
     } catch (e) {
       console.warn('[StudentHome] fetch error', e);
@@ -231,21 +251,33 @@ export default function StudentHomeScreen() {
           </View>
         )}
 
-        {/* All contests list */}
+        {/* All open contests list */}
         {contests.length > 0 && (
           <View style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>Tất cả cuộc thi</Text>
-            {contests.map((c) => (
-              <View key={c._id} style={styles.contestListItem}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.contestListTitle}>{c.title}</Text>
-                  <Text style={styles.contestListDate}>
-                    {dayjs(c.start_date).format('DD/MM/YYYY')} – {dayjs(c.end_date).format('DD/MM/YYYY')}
-                  </Text>
+            <Text style={styles.sectionTitle}>Cuộc thi đang diễn ra</Text>
+            {contests.map((c) => {
+              const isJoined = myTeams.some(
+                t => (t.contest_id?._id ?? t.contest_id)?.toString() === c._id?.toString()
+              );
+              return (
+                <View key={c._id} style={styles.contestListItem}>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                      <Text style={styles.contestListTitle}>{c.title}</Text>
+                      {isJoined && (
+                        <View style={[styles.badge, { backgroundColor: '#4F8EF720' }]}>
+                          <Text style={[styles.badgeText, { color: '#4F8EF7' }]}>Đang tham gia</Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.contestListDate}>
+                      {dayjs(c.start_date).format('DD/MM/YYYY')} – {dayjs(c.end_date).format('DD/MM/YYYY')}
+                    </Text>
+                  </View>
+                  <StatusBadge status={c.status} />
                 </View>
-                <StatusBadge status={c.status} />
-              </View>
-            ))}
+              );
+            })}
           </View>
         )}
       </ScrollView>
