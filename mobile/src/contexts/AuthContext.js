@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as WebBrowser from 'expo-web-browser';
 import * as AuthSession from 'expo-auth-session';
 import { authApi } from '../api/endpoints';
-import { BASE_URL } from '../api/client';
+import { BASE_URL, authEvents } from '../api/client';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -21,8 +21,11 @@ export const AuthProvider = ({ children }) => {
         const [storedUser, accessToken, refreshToken] = await AsyncStorage.multiGet([
           'user', 'accessToken', 'refreshToken',
         ]);
-        if (storedUser[1] && accessToken[1]) {
+        if (storedUser[1] && accessToken[1] && refreshToken[1]) {
           setUser(JSON.parse(storedUser[1]));
+        } else {
+          // Clear stale/incomplete session
+          await AsyncStorage.multiRemove(['accessToken', 'refreshToken', 'user']);
         }
       } catch (e) {
         console.warn('[AuthContext] bootstrap error', e);
@@ -30,6 +33,13 @@ export const AuthProvider = ({ children }) => {
         setLoading(false);
       }
     })();
+  }, []);
+
+  // ─── Force logout when interceptor detects missing/invalid tokens ────────
+  useEffect(() => {
+    const handler = () => setUser(null);
+    authEvents.on('logout', handler);
+    return () => authEvents.off('logout', handler);
   }, []);
 
   // ─── Email / Password login ────────────────────────────────────────────
