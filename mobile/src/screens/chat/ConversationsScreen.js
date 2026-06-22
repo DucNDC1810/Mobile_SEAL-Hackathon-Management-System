@@ -79,29 +79,32 @@ export default function ConversationsScreen({ navigation }) {
           _mentorId:    c.mentor_id?._id ?? c.mentor_id,
         })));
       } else {
-        // Student: first get their team, then get mentors for that team
-        const { teamApi, contestApi } = await import('../../api/endpoints');
-        const cRes = await contestApi.getAll();
-        const allContests = cRes.data?.data ?? cRes.data ?? [];
-        const openContest = allContests.find(c => c.status === 'open');
-        if (!openContest) { setConversations([]); return; }
+        // Student: get teams via /teams/me, pick team in open contest
+        const { teamApi } = await import('../../api/endpoints');
+        const myTeamsRes = await teamApi.getMyTeams();
+        const myTeams = myTeamsRes.data ?? [];
+        if (!myTeams.length) { setConversations([]); return; }
 
-        const tRes = await teamApi.getMyTeamInContest(openContest._id);
-        const team = tRes.data?.data;
-        if (!team) { setConversations([]); return; }
+        const sorted = [...myTeams].sort((a, b) => {
+          const aOpen = a.contest_id?.status === 'open' ? 1 : 0;
+          const bOpen = b.contest_id?.status === 'open' ? 1 : 0;
+          return bOpen - aOpen;
+        });
+        const team = sorted[0];
+        const contestTitle = team.contest_id?.title ?? '';
 
         const mRes = await chatApi.getTeamMentors(team._id);
         const mentors = mRes.data?.data ?? [];
         setConversations(mentors.map(m => ({
-          _id:          `${m._contestId}:${m._roundId}:${team._id}:${m.mentor_id}`,
-          name:         m.mentor_name ?? m.full_name ?? 'Mentor',
-          mentor_name:  m.mentor_name ?? m.full_name,
-          contest_title: openContest.title,
-          last_message: m.last_message,
-          _teamId:      team._id,
-          _contestId:   m.contest_id ?? openContest._id,
-          _roundId:     m.round_id,
-          _mentorId:    m.mentor_id,
+          _id:           `${m.contest_id}:${m.round_id}:${team._id}:${m.mentor_id}`,
+          name:          m.mentor_name ?? m.full_name ?? 'Mentor',
+          mentor_name:   m.mentor_name ?? m.full_name,
+          contest_title: contestTitle,
+          last_message:  m.last_message,
+          _teamId:       team._id,
+          _contestId:    m.contest_id,
+          _roundId:      m.round_id,
+          _mentorId:     m.mentor_id,
         })));
       }
     } catch (e) {
