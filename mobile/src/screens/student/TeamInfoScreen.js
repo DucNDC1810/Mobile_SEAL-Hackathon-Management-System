@@ -68,23 +68,32 @@ export default function TeamInfoScreen() {
   const [poolName,  setPoolName]  = useState('');
   const [loading,   setLoading]   = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [networkError, setNetworkError] = useState(false);
 
   const fetchData = useCallback(async () => {
+    setNetworkError(false);
     try {
-      // Find active contest first
-      const cRes = await contestApi.getAll();
-      const allContests = cRes.data?.data ?? cRes.data ?? [];
-      const openContest = allContests.find(c => c.status === 'open') ?? allContests[0];
-      if (!openContest) { setLoading(false); setRefreshing(false); return; }
-
-      const tRes = await teamApi.getMyTeamInContest(openContest._id);
-      const teamData = tRes.data?.data;
-      if (!teamData) { setLoading(false); setRefreshing(false); return; }
-      setTeam(teamData);
-      setTopic(teamData.topic_id ?? null);
-      setPoolName(teamData.pool_id?.name ?? '');
+      // Get all my teams, pick the one in an open contest
+      const myTeamsRes = await teamApi.getMyTeams();
+      const myTeams = myTeamsRes.data ?? [];
+      if (myTeams.length > 0) {
+        // Prefer team in an open contest, fallback to latest
+        const sorted = [...myTeams].sort((a, b) => {
+          const aOpen = a.contest_id?.status === 'open' ? 1 : 0;
+          const bOpen = b.contest_id?.status === 'open' ? 1 : 0;
+          return bOpen - aOpen;
+        });
+        const picked = sorted[0];
+        // Fetch full detail to get populated pool_id
+        const detailRes = await teamApi.getTeamById(picked._id);
+        const teamData = detailRes.data?.data ?? picked;
+        setTeam(teamData);
+        setTopic(teamData.topic_id ?? null);
+        setPoolName(teamData.pool_id?.name ?? '');
+      }
     } catch (e) {
       console.warn('[TeamInfo] fetch error', e);
+      if (!e?.response) setNetworkError(true);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -105,8 +114,22 @@ export default function TeamInfoScreen() {
   if (!team) {
     return (
       <View style={styles.center}>
-        <Ionicons name="people-outline" size={56} color={colors.text.muted} />
-        <Text style={[styles.emptyText, { marginTop: 16 }]}>Bạn chưa thuộc đội nào</Text>
+        <Ionicons
+          name={networkError ? 'wifi-outline' : 'people-outline'}
+          size={56}
+          color={colors.text.muted}
+        />
+        <Text style={[styles.emptyText, { marginTop: 16 }]}>
+          {networkError ? 'Không thể kết nối máy chủ' : 'Bạn chưa thuộc đội nào'}
+        </Text>
+        {networkError && (
+          <Text
+            onPress={() => { setLoading(true); fetchData(); }}
+            style={{ color: colors.brand.primary, marginTop: 12, fontWeight: '600' }}
+          >
+            Thử lại
+          </Text>
+        )}
       </View>
     );
   }

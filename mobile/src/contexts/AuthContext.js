@@ -37,10 +37,12 @@ export const AuthProvider = ({ children }) => {
     setAuthError(null);
     try {
       const res = await authApi.signIn(email, password);
-      const { accessToken, refreshToken, user: userData } = res.data;
+      // Backend trả về: { success, data: { ...user, accessToken } }
+      const responseData = res.data?.data || res.data;
+      const { accessToken, refreshToken, ...userData } = responseData;
       await AsyncStorage.multiSet([
         ['accessToken', accessToken],
-        ['refreshToken', refreshToken],
+        ['refreshToken', refreshToken ?? ''],
         ['user', JSON.stringify(userData)],
       ]);
       setUser(userData);
