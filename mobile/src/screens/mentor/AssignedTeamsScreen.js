@@ -37,7 +37,9 @@ function TeamCard({ assignment, onPress }) {
           {assignment.contest_id?.title ?? '—'}
         </Text>
         <Text style={styles.teamRound}>
-          {assignment.round_id?.name ?? '—'}
+          {assignment.contest_id?.rounds?.find(
+            r => r._id?.toString() === (assignment.round_id?._id ?? assignment.round_id)?.toString()
+          )?.name ?? '—'}
         </Text>
       </View>
 
@@ -59,8 +61,9 @@ export default function AssignedTeamsScreen({ navigation }) {
 
   const fetchData = useCallback(async () => {
     try {
-      const res  = await mentorApi.getMyAssignments();
-      setAssignments(res.data?.data ?? []);
+      const res = await mentorApi.getMyAssignments();
+      const data = Array.isArray(res.data) ? res.data : (res.data?.data ?? []);
+      setAssignments(data);
     } catch (e) {
       console.warn('[AssignedTeams] fetch error', e);
     } finally {
@@ -123,6 +126,7 @@ export default function AssignedTeamsScreen({ navigation }) {
               <Text
                 style={[styles.filterChipText, filter === c._id && styles.filterChipTextActive]}
                 numberOfLines={1}
+                maxFontSizeMultiplier={1}
               >
                 {c.title}
               </Text>
@@ -160,10 +164,14 @@ const styles = StyleSheet.create({
   header:  { paddingTop: 56, paddingBottom: spacing.md, paddingHorizontal: spacing.lg, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   countPill: { backgroundColor: colors.brand.secondary + '20', paddingHorizontal: 12, paddingVertical: 5, borderRadius: radius.full },
   countText: { color: colors.brand.secondary, fontWeight: '700', fontSize: 13 },
-  filterRow: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: 8 },
+  filterRow: {
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    gap: 8, alignItems: 'center',
+  },
   filterChip: {
-    paddingHorizontal: 16, paddingVertical: 7, borderRadius: radius.full,
+    paddingHorizontal: 14, paddingVertical: 6, borderRadius: radius.full,
     backgroundColor: colors.bg.card, borderWidth: 1, borderColor: colors.border.default,
+    maxWidth: 160,
   },
   filterChipActive: { backgroundColor: colors.brand.secondary, borderColor: colors.brand.secondary },
   filterChipText: { color: colors.text.secondary, fontSize: 13, fontWeight: '600' },
