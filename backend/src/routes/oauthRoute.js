@@ -39,12 +39,7 @@ const handleOAuthCallback = (req, res) => {
 // ─── Google ──────────────────────────────────────────────────────────────────
 router.get(
   "/google",
-  (req, res, next) => {
-    const isMobile = req.query.mobile === "true";
-    const stateObj = { isMobile, redirectUri: req.query.redirectUri };
-    const state = Buffer.from(JSON.stringify(stateObj)).toString('base64');
-    passport.authenticate("google", { session: false, scope: ["profile", "email"], state })(req, res, next);
-  }
+  passport.authenticate("google", { session: false, scope: ["profile", "email"] })
 );
 
 router.get(
@@ -53,29 +48,7 @@ router.get(
     session: false,
     failureRedirect: `${CLIENT_URL}/login?error=google_failed`,
   }),
-  (req, res) => {
-    let stateObj = {};
-    try {
-      if (req.query.state) stateObj = JSON.parse(Buffer.from(req.query.state, 'base64').toString('utf8'));
-    } catch(e) {}
-    
-    const isMobile = stateObj.isMobile;
-    const redirectUri = stateObj.redirectUri || 'sealhackathon://oauth';
-    
-    const { isNewUser, ...userDoc } = req.user;
-    const accessToken = generateAccessToken(userDoc._id);
-    const refreshToken = generateRefreshToken(userDoc._id);
-    
-    if (isMobile) {
-      return res.redirect(`${redirectUri}?accessToken=${accessToken}&refreshToken=${refreshToken}`);
-    }
-
-    res.cookie("refreshToken", refreshToken, COOKIE_OPTS);
-    if (isNewUser) {
-      return res.redirect(`${CLIENT_URL}/complete-profile?token=${accessToken}`);
-    }
-    res.redirect(`${CLIENT_URL}/oauth-callback?token=${accessToken}`);
-  }
+  handleOAuthCallback
 );
 
 // ─── GitHub ──────────────────────────────────────────────────────────────────

@@ -207,7 +207,7 @@ export const getMyTeams = async (userId, userEmail) => {
     .populate("leader_id", "full_name email avatar_url profile_verify_status is_profile_complete student_id student_card")
     .populate("members.user_id", "full_name email avatar_url profile_verify_status is_profile_complete student_id student_card")
     .populate("topic_id", "title description difficulty status admin_note resources")
-    .populate("contest_id", "title description status start_date end_date")
+    .populate("contest_id", "title description status start_date end_date registration_deadline rounds")
     .sort({ created_at: -1 });
 };
 
