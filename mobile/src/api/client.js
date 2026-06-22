@@ -3,7 +3,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Android emulator: 10.0.2.2 maps to host machine's localhost
 // For physical device on same WiFi: replace with your machine's local IP (e.g., 192.168.x.x)
-export const BASE_URL = 'http://172.20.10.5:5001';
+export const BASE_URL = 'http://192.168.100.137:5001';
+
+// Minimal event bus to signal AuthContext to force logout
+const _listeners = {};
+export const authEvents = {
+  on:   (evt, fn) => { _listeners[evt] = [...(_listeners[evt] ?? []), fn]; },
+  off:  (evt, fn) => { _listeners[evt] = (_listeners[evt] ?? []).filter(f => f !== fn); },
+  emit: (evt)     => { (_listeners[evt] ?? []).forEach(f => f()); },
+};
 
 const apiClient = axios.create({
   baseURL: `${BASE_URL}/api`,
@@ -52,7 +60,12 @@ apiClient.interceptors.response.use(
       isRefreshing = true;
       try {
         const refreshToken = await AsyncStorage.getItem('refreshToken');
-        if (!refreshToken) throw new Error('No refresh token');
+        if (!refreshToken) {
+          await AsyncStorage.multiRemove(['accessToken', 'refreshToken', 'user']);
+          processQueue(new Error('No refresh token'), null);
+          authEvents.emit('logout');
+          return Promise.reject(new Error('No refresh token'));
+        }
         const res = await axios.post(`${BASE_URL}/api/auth/refresh`, { refreshToken });
         const { accessToken } = res.data;
         await AsyncStorage.setItem('accessToken', accessToken);
@@ -62,6 +75,7 @@ apiClient.interceptors.response.use(
       } catch (err) {
         processQueue(err, null);
         await AsyncStorage.multiRemove(['accessToken', 'refreshToken', 'user']);
+        authEvents.emit('logout');
         return Promise.reject(err);
       } finally {
         isRefreshing = false;
