@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View, Text, ScrollView, StyleSheet, RefreshControl,
   TouchableOpacity, ActivityIndicator, StatusBar,
@@ -10,36 +11,44 @@ import { chatApi } from '../../api/endpoints';
 import { colors, spacing, radius, typography } from '../../theme';
 import dayjs from 'dayjs';
 
-function ConversationItem({ item, onPress, currentUserId }) {
-  const otherName = item.team_name ?? item.mentor_name ?? item.name ?? 'Chat';
+function ConversationItem({ item, onPress }) {
+  const otherName = item.mentor_name ?? item.team_name ?? item.name ?? 'Chat';
   const lastMsg   = item.last_message ?? item.lastMessage;
   const unread    = item.unread_count ?? 0;
+  const hasUnread = unread > 0;
+  const isClosed  = item.chatOpen === false;
   const initial   = (otherName).charAt(0).toUpperCase();
 
   return (
-    <TouchableOpacity style={styles.convItem} onPress={onPress} activeOpacity={0.8}>
+    <TouchableOpacity
+      style={[styles.convItem, hasUnread && styles.convItemUnread]}
+      onPress={onPress}
+      activeOpacity={0.8}
+    >
+      {/* Unread indicator bar */}
+      {hasUnread && <View style={styles.unreadBar} />}
+
       {/* Avatar */}
-      <LinearGradient
-        colors={colors.brand.gradient}
-        style={styles.convAvatar}
-      >
+      <LinearGradient colors={colors.brand.gradient} style={styles.convAvatar}>
         <Text style={styles.convAvatarText}>{initial}</Text>
       </LinearGradient>
 
       <View style={{ flex: 1 }}>
         <View style={styles.convTopRow}>
-          <Text style={styles.convName} numberOfLines={1}>{otherName}</Text>
+          <Text style={[styles.convName, hasUnread && styles.convNameUnread]} numberOfLines={1}>
+            {otherName}
+          </Text>
           {lastMsg && (
-            <Text style={styles.convTime}>
+            <Text style={[styles.convTime, hasUnread && styles.convTimeUnread]}>
               {dayjs(lastMsg.created_at).format('HH:mm')}
             </Text>
           )}
         </View>
         <View style={styles.convBottomRow}>
-          <Text style={styles.convLastMsg} numberOfLines={1}>
+          <Text style={[styles.convLastMsg, hasUnread && styles.convLastMsgUnread]} numberOfLines={1}>
             {lastMsg?.content || 'Chưa có tin nhắn'}
           </Text>
-          {unread > 0 && (
+          {hasUnread && (
             <View style={styles.unreadBadge}>
               <Text style={styles.unreadText}>{unread > 99 ? '99+' : unread}</Text>
             </View>
@@ -47,7 +56,7 @@ function ConversationItem({ item, onPress, currentUserId }) {
         </View>
         {item.contest_title && (
           <Text style={styles.convContest} numberOfLines={1}>
-            {item.contest_title}
+            {item.contest_title}{isClosed ? ' · Đã đóng' : ''}
           </Text>
         )}
       </View>
@@ -63,49 +72,71 @@ export default function ConversationsScreen({ navigation }) {
 
   const fetchConversations = useCallback(async () => {
     try {
+      console.log('[Chat] fetchConversations isMentor:', isMentor, 'hasRole(mentor):', hasRole('mentor'), 'user roles:', user?.roles?.map(r => r.role_name));
       if (isMentor || hasRole('mentor')) {
         // Mentor: get all conversations
         const res = await chatApi.getConversations();
         const raw = res.data?.data ?? [];
-        // Each item: { team_id, team_name, contest_id, round_id, mentor_id, last_message }
+        // service returns camelCase: teamName, contestTitle, teamId, contestId, roundId, mentorId
         setConversations(raw.map(c => ({
           ...c,
-          name:         c.team_name ?? c.team_id?.team_name,
-          team_name:    c.team_name ?? c.team_id?.team_name,
-          contest_title: c.contest_id?.title ?? '',
-          _teamId:      c.team_id?._id ?? c.team_id,
-          _contestId:   c.contest_id?._id ?? c.contest_id,
-          _roundId:     c.round_id?._id ?? c.round_id,
-          _mentorId:    c.mentor_id?._id ?? c.mentor_id,
+          name:          c.teamName ?? 'Nhóm',
+          team_name:     c.teamName ?? 'Nhóm',
+          contest_title: c.contestTitle ?? '',
+          last_message:  c.lastMessage,
+          unread_count:  c.unreadCount ?? 0,
+          _teamId:       c.teamId,
+          _contestId:    c.contestId,
+          _roundId:      c.roundId,
+          _mentorId:     c.mentorId,
         })));
       } else {
-        // Student: get teams via /teams/me, pick team in open contest
+        // Student: get all teams, then fetch mentors for each team
+        console.log('[Chat] student user:', user?._id, user?.email);
         const { teamApi } = await import('../../api/endpoints');
         const myTeamsRes = await teamApi.getMyTeams();
-        const myTeams = myTeamsRes.data ?? [];
+        // /teams/me returns array directly
+        const raw = myTeamsRes.data;
+        const myTeams = Array.isArray(raw) ? raw : (raw?.data ?? []);
+        console.log('[Chat] myTeams count:', myTeams.length, 'ids:', myTeams.map(t => t._id));
         if (!myTeams.length) { setConversations([]); return; }
 
-        const sorted = [...myTeams].sort((a, b) => {
-          const aOpen = a.contest_id?.status === 'open' ? 1 : 0;
-          const bOpen = b.contest_id?.status === 'open' ? 1 : 0;
-          return bOpen - aOpen;
-        });
-        const team = sorted[0];
-        const contestTitle = team.contest_id?.title ?? '';
-
-        const mRes = await chatApi.getTeamMentors(team._id);
-        const mentors = mRes.data?.data ?? [];
-        setConversations(mentors.map(m => ({
-          _id:           `${m.contest_id}:${m.round_id}:${team._id}:${m.mentor_id}`,
-          name:          m.mentor_name ?? m.full_name ?? 'Mentor',
-          mentor_name:   m.mentor_name ?? m.full_name,
-          contest_title: contestTitle,
-          last_message:  m.last_message,
-          _teamId:       team._id,
-          _contestId:    m.contest_id,
-          _roundId:      m.round_id,
-          _mentorId:     m.mentor_id,
-        })));
+        // Fetch mentors for all teams in parallel, flatten results
+        const allMentors = [];
+        await Promise.allSettled(
+          myTeams.map(async (team) => {
+            try {
+              const teamId = team._id?.toString?.() ?? team._id;
+              const mRes = await chatApi.getTeamMentors(teamId);
+              const mentors = mRes.data?.data ?? [];
+              // backend returns camelCase: contestId, roundId, mentorId, mentorName, contestTitle
+              mentors.forEach(m => {
+                allMentors.push({
+                  _id:           `${m.contestId}:${m.roundId}:${teamId}:${m.mentorId}`,
+                  name:          m.mentorName ?? 'Mentor',
+                  mentor_name:   m.mentorName,
+                  contest_title: m.contestTitle ?? '',
+                  last_message:  m.lastMessage,
+                  unread_count:  m.unreadCount ?? 0,
+                  chatOpen:      m.chatOpen,
+                  _teamId:       teamId,
+                  _contestId:    m.contestId,
+                  _roundId:      m.roundId,
+                  _mentorId:     m.mentorId,
+                });
+              });
+            } catch (err) {
+              console.warn('[Chat] getTeamMentors failed for team', team._id, err?.response?.status, err?.response?.data ?? err?.message);
+            }
+          })
+        );
+        // Dedup by _id in case same assignment appears via multiple team entries
+        const seen = new Set();
+        setConversations(allMentors.filter(m => {
+          if (seen.has(m._id)) return false;
+          seen.add(m._id);
+          return true;
+        }));
       }
     } catch (e) {
       console.warn('[Conversations] fetch error', e);
@@ -116,6 +147,12 @@ export default function ConversationsScreen({ navigation }) {
   }, [isMentor, hasRole]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
+
+  // Refresh list every time user navigates back to this tab
+  useFocusEffect(useCallback(() => {
+    fetchConversations();
+  }, [fetchConversations]));
+
   const onRefresh = () => { setRefreshing(true); fetchConversations(); };
 
   if (loading) {
@@ -190,14 +227,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
     borderBottomWidth: 1, borderBottomColor: colors.border.default, gap: spacing.md,
+    position: 'relative', overflow: 'hidden',
+  },
+  convItemUnread: {
+    backgroundColor: colors.brand.primary + '0D',
+  },
+  unreadBar: {
+    position: 'absolute', left: 0, top: 0, bottom: 0,
+    width: 3, backgroundColor: colors.brand.primary, borderRadius: 2,
   },
   convAvatar: { width: 52, height: 52, borderRadius: 26, justifyContent: 'center', alignItems: 'center' },
   convAvatarText: { color: '#fff', fontWeight: '700', fontSize: 20 },
   convTopRow:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 },
-  convName:      { ...typography.body, fontWeight: '700', flex: 1, marginRight: 8 },
+  convName:      { ...typography.body, fontWeight: '600', flex: 1, marginRight: 8 },
+  convNameUnread: { fontWeight: '800', color: '#fff' },
   convTime:      { ...typography.caption },
+  convTimeUnread: { color: colors.brand.primary, fontWeight: '700' },
   convBottomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   convLastMsg:   { ...typography.bodySmall, flex: 1, marginRight: 8 },
+  convLastMsgUnread: { color: colors.text.primary, fontWeight: '600' },
   convContest:   { ...typography.caption, color: colors.brand.accent, marginTop: 3 },
   unreadBadge: {
     backgroundColor: colors.brand.primary, minWidth: 20, height: 20,

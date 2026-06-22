@@ -96,6 +96,7 @@ export default function ChatScreen({ route, navigation }) {
 
   const flatListRef  = useRef(null);
   const typingTimer  = useRef(null);
+  const inputRef     = useRef(null);
   const myUserId     = user?._id ?? user?.id;
 
   // ─── Load messages + socket setup ──────────────────────────────────────────
@@ -108,7 +109,7 @@ export default function ChatScreen({ route, navigation }) {
         const res = await chatApi.getMessages(contestId, roundId, teamId, mentorId);
         const data = res.data?.data ?? {};
         const msgs = Array.isArray(data) ? data : (data.messages ?? data.data ?? []);
-        setMessages(msgs.reverse()); // API returns newest first, we want oldest first
+        setMessages(msgs); // backend sorts by created_at asc — oldest first is correct
       } catch (e) {
         console.warn('[Chat] load messages error', e);
       } finally {
@@ -127,7 +128,10 @@ export default function ChatScreen({ route, navigation }) {
 
       // Listen for new messages
       unsubMsg = onMessage((msg) => {
-        setMessages(prev => [...prev, msg]);
+        setMessages(prev => {
+          if (prev.some(m => m._id && m._id === msg._id)) return prev;
+          return [...prev, msg];
+        });
         setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
       });
 
@@ -156,40 +160,50 @@ export default function ChatScreen({ route, navigation }) {
     const text = inputText.trim();
     if (!text || sending) return;
     setSending(true);
+    // Clear input via ref (uncontrolled) to avoid iOS autocorrect interference
+    inputRef.current?.clear();
     setInputText('');
     Keyboard.dismiss();
     try {
       const res = await chatApi.sendMessage(contestId, roundId, teamId, mentorId, text);
-      // Socket will broadcast — but also add locally for instant feedback
       const newMsg = res.data?.data;
       if (newMsg) {
-        setMessages(prev => [...prev, newMsg]);
+        setMessages(prev => {
+          if (prev.some(m => m._id && m._id === newMsg._id)) return prev;
+          return [...prev, newMsg];
+        });
         setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
       }
     } catch (e) {
       console.warn('[Chat] send error', e);
-      setInputText(text); // restore on error
+      inputRef.current?.setNativeProps({ text });
+      setInputText(text);
     } finally {
       setSending(false);
     }
   }, [inputText, sending, contestId, roundId, teamId, mentorId]);
 
   // ─── Typing emit ───────────────────────────────────────────────────────────
-  const handleTyping = (text) => {
+  const handleTyping = useCallback((text) => {
     setInputText(text);
-    emitTyping({ contestId, roundId, teamId, mentorId, isTyping: true });
+    // Defer typing socket emit to avoid interrupting IME composition (Vietnamese input)
     clearTimeout(typingTimer.current);
     typingTimer.current = setTimeout(() => {
-      emitTyping({ contestId, roundId, teamId, mentorId, isTyping: false });
-    }, 1500);
-  };
+      emitTyping({ contestId, roundId, teamId, mentorId, isTyping: true });
+      clearTimeout(typingTimer.current);
+      typingTimer.current = setTimeout(() => {
+        emitTyping({ contestId, roundId, teamId, mentorId, isTyping: false });
+      }, 1500);
+    }, 300);
+  }, [contestId, roundId, teamId, mentorId]);
 
   // ─── Group messages by date ────────────────────────────────────────────────
   const renderItem = ({ item, index }) => {
-    const isMine      = item.sender_id?._id === myUserId || item.sender_id === myUserId;
+    const senderId    = (item.sender_id?._id ?? item.sender_id)?.toString();
+    const isMine      = !!senderId && !!myUserId && senderId === myUserId.toString();
     const prevMsg     = messages[index - 1];
     const showDate    = !prevMsg || !dayjs(item.created_at).isSame(dayjs(prevMsg.created_at), 'day');
-    const prevIsSame  = prevMsg && (prevMsg.sender_id?._id ?? prevMsg.sender_id) === (item.sender_id?._id ?? item.sender_id);
+    const prevIsSame  = prevMsg && (prevMsg.sender_id?._id ?? prevMsg.sender_id)?.toString() === senderId;
     const avatarInitial = (item.sender_id?.full_name ?? chatName ?? '?').charAt(0).toUpperCase();
 
     return (
@@ -249,7 +263,7 @@ export default function ChatScreen({ route, navigation }) {
             ref={flatListRef}
             data={messages}
             renderItem={renderItem}
-            keyExtractor={(item, i) => item._id ?? String(i)}
+            keyExtractor={(item, i) => (item._id ?? item.id ?? String(i)).toString()}
             contentContainerStyle={styles.messageList}
             showsVerticalScrollIndicator={false}
             onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
@@ -268,14 +282,19 @@ export default function ChatScreen({ route, navigation }) {
           {chatOpen ? (
             <>
               <TextInput
+                ref={inputRef}
                 style={styles.input}
                 placeholder="Nhập tin nhắn..."
                 placeholderTextColor={colors.text.muted}
-                value={inputText}
-                onChangeText={handleTyping}
+                onChangeText={setInputText}
                 multiline
                 maxLength={2000}
                 returnKeyType="default"
+                autoCorrect={false}
+                spellCheck={false}
+                autoComplete="off"
+                autoCapitalize="sentences"
+                textContentType="none"
               />
               <TouchableOpacity
                 style={[styles.sendBtn, (!inputText.trim() || sending) && styles.sendBtnDisabled]}
