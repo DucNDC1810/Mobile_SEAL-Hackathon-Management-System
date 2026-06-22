@@ -45,6 +45,11 @@ function ContestChip({ assignment }) {
   );
 }
 
+function getRoundName(assignment) {
+  const roundId = (assignment.round_id?._id ?? assignment.round_id)?.toString();
+  return assignment.contest_id?.rounds?.find(r => r._id?.toString() === roundId)?.name ?? '—';
+}
+
 export default function MentorHomeScreen() {
   const { user } = useAuth();
   const [assignments, setAssignments] = useState([]);
@@ -54,7 +59,7 @@ export default function MentorHomeScreen() {
   const fetchData = useCallback(async () => {
     try {
       const res = await mentorApi.getMyAssignments();
-      const data = res.data?.data ?? [];
+      const data = Array.isArray(res.data) ? res.data : (res.data?.data ?? []);
       setAssignments(data);
     } catch (e) {
       console.warn('[MentorHome] fetch error', e);
@@ -152,7 +157,7 @@ export default function MentorHomeScreen() {
                           {a.team_id?.team_name ?? 'Nhóm không tên'}
                         </Text>
                         <Text style={styles.assignmentRound}>
-                          {a.round_id?.name ?? '—'} · Phân công {dayjs(a.assigned_at).format('DD/MM/YYYY')}
+                          {getRoundName(a)} · Phân công {dayjs(a.assigned_at).format('DD/MM/YYYY')}
                         </Text>
                       </View>
                       <View style={[styles.statusBadge, { backgroundColor: '#10B98120' }]}>
