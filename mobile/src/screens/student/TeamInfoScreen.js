@@ -6,7 +6,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../../contexts/AuthContext';
-import { teamApi, contestApi } from '../../api/endpoints';
+import { teamApi, contestApi, chatApi } from '../../api/endpoints';
 import { colors, spacing, radius, typography } from '../../theme';
 import dayjs from 'dayjs';
 
@@ -66,6 +66,7 @@ export default function TeamInfoScreen() {
   const [team,      setTeam]      = useState(null);
   const [topic,     setTopic]     = useState(null);
   const [poolName,  setPoolName]  = useState('');
+  const [mentors,   setMentors]   = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [networkError, setNetworkError] = useState(false);
@@ -90,6 +91,12 @@ export default function TeamInfoScreen() {
         setTeam(teamData);
         setTopic(teamData.topic_id ?? null);
         setPoolName(teamData.pool_id?.name ?? '');
+
+        // Fetch mentors for this team
+        try {
+          const mRes = await chatApi.getTeamMentors(teamData._id);
+          setMentors(mRes.data?.data ?? []);
+        } catch (_) {}
       }
     } catch (e) {
       console.warn('[TeamInfo] fetch error', e);
@@ -179,6 +186,35 @@ export default function TeamInfoScreen() {
           <Text style={styles.sectionTitle}>Chủ đề được giao</Text>
           <TopicCard topic={topic} />
         </View>
+
+        {/* Mentors */}
+        {mentors.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Mentor phụ trách</Text>
+            {mentors.map((m, i) => (
+              <View key={m.assignmentId ?? i} style={styles.mentorCard}>
+                <LinearGradient
+                  colors={['#7C3AED', '#4F46E5']}
+                  style={styles.mentorAvatar}
+                >
+                  <Text style={styles.mentorInitial}>
+                    {(m.mentorName ?? '?').charAt(0).toUpperCase()}
+                  </Text>
+                </LinearGradient>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.mentorName}>{m.mentorName ?? '—'}</Text>
+                  <Text style={styles.mentorEmail}>{m.mentorEmail ?? ''}</Text>
+                  <Text style={styles.mentorRound}>{m.roundName ?? ''}</Text>
+                </View>
+                <View style={[styles.mentorBadge, { backgroundColor: m.chatOpen ? '#10B98120' : '#6B728020' }]}>
+                  <Text style={[styles.mentorBadgeText, { color: m.chatOpen ? '#10B981' : colors.text.muted }]}>
+                    {m.chatOpen ? 'Chat mở' : 'Chat đóng'}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Members */}
         <View style={styles.section}>
@@ -285,4 +321,17 @@ const styles = StyleSheet.create({
   noTopicText: { ...typography.body, color: colors.text.muted },
   infoCard: { backgroundColor: colors.bg.card, borderRadius: radius.lg, padding: spacing.md, borderWidth: 1, borderColor: colors.border.default },
   emptyText: { ...typography.body, color: colors.text.muted },
+  mentorCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.bg.card, borderRadius: radius.md,
+    padding: spacing.md, marginBottom: spacing.sm,
+    borderWidth: 1, borderColor: colors.border.default, gap: spacing.md,
+  },
+  mentorAvatar: { width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center' },
+  mentorInitial: { color: '#fff', fontWeight: '700', fontSize: 17 },
+  mentorName:  { ...typography.body, fontWeight: '600' },
+  mentorEmail: { ...typography.caption, marginTop: 2 },
+  mentorRound: { ...typography.caption, color: colors.brand.accent, marginTop: 2 },
+  mentorBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.full },
+  mentorBadgeText: { fontSize: 11, fontWeight: '700' },
 });
