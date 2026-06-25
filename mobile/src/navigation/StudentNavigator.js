@@ -1,8 +1,10 @@
 import React from 'react';
+import { View, Text } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme';
+import { useUnread } from '../contexts/UnreadContext';
 
 import StudentHomeScreen    from '../screens/student/StudentHomeScreen';
 import TeamInfoScreen       from '../screens/student/TeamInfoScreen';
@@ -23,6 +25,8 @@ function ChatStack() {
 }
 
 export default function StudentNavigator() {
+  const { unreadCount, clearUnread } = useUnread();
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -38,20 +42,41 @@ export default function StudentNavigator() {
         tabBarActiveTintColor:   colors.brand.primary,
         tabBarInactiveTintColor: colors.text.muted,
         tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
-        tabBarIcon: ({ focused, color, size }) => {
+        tabBarIcon: ({ focused, color }) => {
           const icons = {
-            Home:    focused ? 'home'    : 'home-outline',
-            Team:    focused ? 'people'  : 'people-outline',
-            Chat:    focused ? 'chatbubbles' : 'chatbubbles-outline',
-            Profile: focused ? 'person'  : 'person-outline',
+            Home:    focused ? 'home'         : 'home-outline',
+            Team:    focused ? 'people'       : 'people-outline',
+            Chat:    focused ? 'chatbubbles'  : 'chatbubbles-outline',
+            Profile: focused ? 'person'       : 'person-outline',
           };
-          return <Ionicons name={icons[route.name]} size={22} color={color} />;
+          const showBadge = route.name === 'Chat' && unreadCount > 0;
+          return (
+            <View>
+              <Ionicons name={icons[route.name]} size={22} color={color} />
+              {showBadge && (
+                <View style={{
+                  position: 'absolute', top: -4, right: -8,
+                  backgroundColor: '#EF4444', borderRadius: 8,
+                  minWidth: 16, height: 16,
+                  justifyContent: 'center', alignItems: 'center',
+                  paddingHorizontal: 3,
+                }}>
+                  <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </Text>
+                </View>
+              )}
+            </View>
+          );
         },
       })}
     >
       <Tab.Screen name="Home"    component={StudentHomeScreen}    options={{ tabBarLabel: 'Tổng quan' }} />
       <Tab.Screen name="Team"    component={TeamInfoScreen}        options={{ tabBarLabel: 'Đội của tôi' }} />
-      <Tab.Screen name="Chat"    component={ChatStack}             options={{ tabBarLabel: 'Chat' }} />
+      <Tab.Screen name="Chat"    component={ChatStack}
+        listeners={{ tabPress: () => clearUnread() }}
+        options={{ tabBarLabel: 'Chat' }}
+      />
       <Tab.Screen name="Profile" component={StudentProfileScreen}  options={{ tabBarLabel: 'Hồ sơ' }} />
     </Tab.Navigator>
   );
