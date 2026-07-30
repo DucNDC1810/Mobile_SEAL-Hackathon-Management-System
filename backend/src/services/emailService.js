@@ -1,24 +1,102 @@
 import nodemailer from "nodemailer";
 
-const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || "smtp.gmail.com",
-  port: Number(process.env.EMAIL_PORT) || 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+const getClientUrl = () => process.env.CLIENT_URL || "http://localhost:5173";
+const getFrom = () => process.env.EMAIL_FROM || (process.env.EMAIL_USER ? `"SEAL Hackathon" <${process.env.EMAIL_USER}>` : "SEAL Hackathon <onboarding@resend.dev>");
+// Sender đã verify trên Brevo — chỉ email này mới được Brevo chấp nhận gửi thật
+// (EMAIL_USER dùng cho SMTP không nhất thiết đã verify trên Brevo, nên không dùng làm fallback ở đây).
+const BREVO_VERIFIED_SENDER = "damchanduc1810@gmail.com";
 
-const FROM = process.env.EMAIL_FROM || "SEAL Hackathon <no-reply@sealhackathon.com>";
-const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+// Helper send function supporting HTTPS REST API (Resend / Brevo) and SMTP fallback
+const dispatchEmail = async (mailOptions) => {
+  const { to, subject, html } = mailOptions;
+  console.log(`[emailService] Attempting to send email to "${to}" | Subject: "${subject}"`);
+
+  // 1. Dùng Brevo HTTPS REST API nếu khai báo BREVO_API_KEY (Gửi được cho tất cả người nhận, không bị hạn chế Domain)
+  if (process.env.BREVO_API_KEY) {
+    try {
+      const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": process.env.BREVO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sender: { name: "SEAL Hackathon", email: process.env.BREVO_SENDER_EMAIL || BREVO_VERIFIED_SENDER },
+          to: [{ email: to }],
+          subject,
+          htmlContent: html,
+        }),
+      });
+      const data = await res.json();
+      // Lưu ý: Brevo có thể trả HTTP 200/201 (request được nhận) nhưng vẫn từ chối
+      // gửi thật nếu sender chưa verify — phải kiểm tra rõ có messageId hay không.
+      if (res.ok && data.messageId) {
+        console.log(`[emailService] Successfully sent via Brevo API to "${to}" | ID: ${data.messageId}`);
+        return data;
+      }
+      console.warn(`[emailService] Brevo API warning: ${JSON.stringify(data)}, falling back to Resend/SMTP...`);
+    } catch (err) {
+      console.warn(`[emailService] Brevo API error: ${err.message}, falling back to Resend/SMTP...`);
+    }
+  }
+
+  // 2. Dùng Resend HTTPS REST API nếu khai báo RESEND_API_KEY (Fallback 2)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const resendFrom = process.env.RESEND_FROM || "SEAL Hackathon <onboarding@resend.dev>";
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: resendFrom,
+          to: [to],
+          subject,
+          html,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        console.log(`[emailService] Successfully sent via Resend API to "${to}" | ID: ${data.id}`);
+        return data;
+      }
+      console.warn(`[emailService] Resend API warning: ${data.message || JSON.stringify(data)}, falling back to SMTP...`);
+    } catch (err) {
+      console.warn(`[emailService] Resend API error: ${err.message}, falling back to SMTP...`);
+    }
+  }
+
+  // 3. Fallback dùng Nodemailer SMTP (Localhost hoặc server mở port)
+  const port = Number(process.env.EMAIL_PORT) || 465;
+  const secure = port === 465;
+  const transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST || "smtp.gmail.com",
+    port: port,
+    secure: secure,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+    tls: { rejectUnauthorized: false },
+    connectionTimeout: 10000,
+  });
+
+  const options = {
+    from: getFrom(),
+    ...mailOptions,
+  };
+  const info = await transporter.sendMail(options);
+  console.log(`[emailService] Successfully sent email via SMTP to "${options.to}" | MessageId: ${info.messageId}`);
+  return info;
+};
 
 // ─── sendVerificationEmail ───────────────────────────────────────────────────
 
 export const sendVerificationEmail = async (to, token) => {
-  const link = `${CLIENT_URL}/verify-email?token=${token}`;
-  await transporter.sendMail({
-    from: FROM,
+  const link = `${getClientUrl()}/verify-email?token=${token}`;
+  return dispatchEmail({
     to,
     subject: "[SEAL Hackathon] Xác nhận địa chỉ email của bạn",
     html: `
@@ -34,9 +112,8 @@ export const sendVerificationEmail = async (to, token) => {
 // ─── sendInvitationEmail ─────────────────────────────────────────────────────
 
 export const sendInvitationEmail = async (to, contestTitle, token) => {
-  const link = `${CLIENT_URL}/invitation/accept?token=${token}`;
-  await transporter.sendMail({
-    from: FROM,
+  const link = `${getClientUrl()}/invitation/accept?token=${token}`;
+  return dispatchEmail({
     to,
     subject: `[SEAL Hackathon] Lời mời tham gia ban giám khảo - ${contestTitle}`,
     html: `
@@ -53,9 +130,8 @@ export const sendInvitationEmail = async (to, contestTitle, token) => {
 // ─── sendJudgeInvitationEmail ─────────────────────────────────────────────────
 
 export const sendJudgeInvitationEmail = async (to, contestTitle, token) => {
-  const link = `${CLIENT_URL}/judge/accept-invite?token=${token}`;
-  await transporter.sendMail({
-    from: FROM,
+  const link = `${getClientUrl()}/judge/accept-invite?token=${token}`;
+  return dispatchEmail({
     to,
     subject: `[SEAL Hackathon] Lời mời làm Giám khảo - ${contestTitle}`,
     html: `
@@ -115,9 +191,8 @@ export const sendJudgeInvitationEmail = async (to, contestTitle, token) => {
 // ─── sendMemberInviteEmail ───────────────────────────────────────────────────
 
 export const sendMemberInviteEmail = async (to, full_name, token) => {
-  const link = `${CLIENT_URL}/team-verify?token=${token}`;
-  await transporter.sendMail({
-    from: FROM,
+  const link = `${getClientUrl()}/team-verify?token=${token}`;
+  return dispatchEmail({
     to,
     subject: "[SEAL Hackathon] Xác nhận tham gia đội thi",
     html: `
@@ -130,11 +205,27 @@ export const sendMemberInviteEmail = async (to, full_name, token) => {
   });
 };
 
+// ─── sendTeamInvitationEmail — new invitation flow (accept/reject in dashboard) ─
+
+export const sendTeamInvitationEmail = async (to, full_name, teamName) => {
+  const link = `${getClientUrl()}/dashboard/team`;
+  return dispatchEmail({
+    to,
+    subject: `[SEAL Hackathon] Bạn được mời vào đội "${teamName}"`,
+    html: `
+      <p>Chào <strong>${full_name || to}</strong>,</p>
+      <p>Bạn vừa nhận được lời mời tham gia đội <strong>${teamName}</strong> trên SEAL Hackathon.</p>
+      <p>Đăng nhập vào hệ thống và vào mục <strong>Lời mời</strong> để chấp nhận hoặc từ chối (có hiệu lực trong <strong>7 ngày</strong>):</p>
+      <p><a href="${link}">${link}</a></p>
+      <p>Nếu bạn không muốn tham gia, bạn có thể từ chối trong hệ thống.</p>
+    `,
+  });
+};
+
 // ─── sendFinalistEmail ────────────────────────────────────────────────────────
 
 export const sendFinalistEmail = async (to, fullName, contestTitle) => {
-  await transporter.sendMail({
-    from: FROM,
+  return dispatchEmail({
     to,
     subject: `[SEAL Hackathon] Chúc mừng! Đội bạn vào vòng chung kết - ${contestTitle}`,
     html: `
@@ -149,8 +240,7 @@ export const sendFinalistEmail = async (to, fullName, contestTitle) => {
 // ─── sendDeadlineReminderEmail ────────────────────────────────────────────────
 
 export const sendDeadlineReminderEmail = async (to, fullName, contestTitle, hoursLeft) => {
-  await transporter.sendMail({
-    from: FROM,
+  return dispatchEmail({
     to,
     subject: `[SEAL Hackathon] Nhắc nhở: Còn ${hoursLeft} giờ để nộp bài - ${contestTitle}`,
     html: `
@@ -165,8 +255,7 @@ export const sendDeadlineReminderEmail = async (to, fullName, contestTitle, hour
 // ─── sendMissingSubmissionEmail ───────────────────────────────────────────────
 
 export const sendMissingSubmissionEmail = async (to, fullName, contestTitle) => {
-  await transporter.sendMail({
-    from: FROM,
+  return dispatchEmail({
     to,
     subject: `[SEAL Hackathon] Cảnh báo: Đội bạn chưa nộp bài - ${contestTitle}`,
     html: `
@@ -180,15 +269,29 @@ export const sendMissingSubmissionEmail = async (to, fullName, contestTitle) => 
 
 // ─── sendMentorAssignedEmail ──────────────────────────────────────────────────
 
-export const sendMentorAssignedEmail = async (to, fullName, contestTitle, poolName) => {
-  await transporter.sendMail({
-    from: FROM,
+export const sendMentorAssignedEmail = async (to, fullName, contestTitle, teamName) => {
+  return dispatchEmail({
     to,
-    subject: `[SEAL Hackathon] Bạn được phân công làm giám khảo - ${contestTitle}`,
+    subject: `[SEAL Hackathon] Bạn được phân công làm Mentor - ${contestTitle}`,
     html: `
       <p>Chào <strong>${fullName}</strong>,</p>
-      <p>Bạn đã được phân công làm <strong>giám khảo</strong> cho bảng <strong>${poolName}</strong> trong cuộc thi <strong>${contestTitle}</strong>.</p>
-      <p>Vui lòng đăng nhập vào hệ thống để xem danh sách đội thi được phân công.</p>
+      <p>Bạn đã được phân công làm <strong>Mentor</strong> hỗ trợ cho đội <strong>${teamName}</strong> trong cuộc thi <strong>${contestTitle}</strong>.</p>
+      <p>Vui lòng đăng nhập vào hệ thống để xem thông tin đội thi và bắt đầu hỗ trợ.</p>
+      <p>Trân trọng,<br/>Ban tổ chức SEAL Hackathon</p>
+    `,
+  });
+};
+
+// ─── sendJudgeAssignedEmail ───────────────────────────────────────────────────
+
+export const sendJudgeAssignedEmail = async (to, fullName, contestTitle, poolName) => {
+  return dispatchEmail({
+    to,
+    subject: `[SEAL Hackathon] Bạn được phân công làm Giám khảo - ${contestTitle}`,
+    html: `
+      <p>Chào <strong>${fullName}</strong>,</p>
+      <p>Bạn đã được phân công làm <strong>Giám khảo</strong> cho bảng <strong>${poolName}</strong> trong cuộc thi <strong>${contestTitle}</strong>.</p>
+      <p>Vui lòng đăng nhập vào hệ thống để xem danh sách đội thi được phân công chấm điểm.</p>
       <p>Trân trọng,<br/>Ban tổ chức SEAL Hackathon</p>
     `,
   });
@@ -197,9 +300,8 @@ export const sendMentorAssignedEmail = async (to, fullName, contestTitle, poolNa
 // ─── sendPasswordResetEmail ──────────────────────────────────────────────────
 
 export const sendPasswordResetEmail = async (to, token) => {
-  const link = `${CLIENT_URL}/reset-password?token=${token}`;
-  await transporter.sendMail({
-    from: FROM,
+  const link = `${getClientUrl()}/reset-password?token=${token}`;
+  return dispatchEmail({
     to,
     subject: "[SEAL Hackathon] Đặt lại mật khẩu",
     html: `
@@ -211,4 +313,11 @@ export const sendPasswordResetEmail = async (to, token) => {
       <p>Nếu bạn không yêu cầu, hãy bỏ qua email này.</p>
     `,
   });
+};
+
+// ─── sendCustomEmail ──────────────────────────────────────────────────────────
+// Dùng cho AI Email Generator: subject/html do admin duyệt từ nội dung AI soạn.
+
+export const sendCustomEmail = async (to, subject, html) => {
+  return dispatchEmail({ to, subject, html });
 };

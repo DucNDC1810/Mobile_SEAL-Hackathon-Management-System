@@ -1,4 +1,5 @@
 import Contest from "../models/Contest.js";
+import Pool from "../models/Pool.js";
 import Score from "../models/Score.js";
 import JudgeAssignment from "../models/JudgeAssignment.js";
 import MentorAssignment from "../models/MentorAssignment.js";
@@ -56,6 +57,13 @@ export const activateRound = async (contestId, roundId, actorId) => {
   }
 
   round.is_active = true;
+  
+  // Auto-release problem when activated
+  const now = new Date();
+  round.problem_released_at = now;
+  const durationHours = round.coding_duration_hours || 24;
+  round.submission_deadline = new Date(now.getTime() + durationHours * 60 * 60 * 1000);
+
   await contest.save();
 
   // Gửi notification cho tất cả judges được assign trong round
@@ -138,6 +146,32 @@ export const lockScoring = async (contestId, roundId, { force = false, force_loc
     { is_final: true }
   );
 
+  // Thông báo cho các đội thi: kết quả vòng này đã công bố, có thể xem breakdown điểm.
+  try {
+    const teams = await Team.find({ contest_id: contestId, status: { $in: ["ACTIVE", "CONFIRMED"] } })
+      .select("leader_id members.user_id")
+      .lean();
+    const recipientIds = new Set();
+    for (const t of teams) {
+      if (t.leader_id) recipientIds.add(t.leader_id.toString());
+      for (const m of t.members || []) {
+        if (m.user_id) recipientIds.add(m.user_id.toString());
+      }
+    }
+    if (recipientIds.size > 0) {
+      await createBulkNotifications({
+        user_ids: [...recipientIds],
+        type: "results_published",
+        title: `Kết quả vòng "${round.name}" đã được công bố`,
+        message: `Cuộc thi "${contest.title}" — kết quả chấm điểm vòng "${round.name}" đã công bố. Xem chi tiết điểm số của đội bạn ngay.`,
+        ref_id: contestId,
+        ref_type: "Contest",
+      });
+    }
+  } catch (e) {
+    console.error("[lockScoring notify]", e);
+  }
+
   return round;
 };
 
@@ -217,16 +251,26 @@ export const releaseProblem = async (roundId, actorId) => {
     throw err;
   }
 
-  if (contest.status !== "open") {
-    const err = new Error("Không thể phát đề bài khi giải đấu chưa diễn ra (Trạng thái hiện tại không phải ONGOING)");
-    err.statusCode = 400;
-    throw err;
-  }
-
   const round = contest.rounds.id(roundId);
   if (!round) {
     const err = new Error("Không tìm thấy vòng thi");
     err.statusCode = 404;
+    throw err;
+  }
+
+
+  // Kiểm tra tất cả pool trong vòng này đã có drive_link chưa
+  const pools = await Pool.find({ contest_id: contest._id, round_id: roundId });
+  if (pools.length === 0) {
+    const err = new Error("Vòng thi chưa có bảng đấu nào. Vui lòng tạo bảng đấu và nhập link Google Drive trước khi phát đề.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const missingLink = pools.filter(p => !p.drive_link || !p.drive_link.trim());
+  if (missingLink.length > 0) {
+    const names = missingLink.map(p => p.pool_name).join(", ");
+    const err = new Error(`Các bảng đấu sau chưa có link Google Drive đề bài: ${names}. Vui lòng nhập link trước khi phát đề.`);
+    err.statusCode = 400;
     throw err;
   }
 
@@ -355,6 +399,12 @@ export const checkJudgeCompletion = async (roundId) => {
     .populate("judge_id", "full_name email")
     .populate("pool_id");
 
+  const contest = await Contest.findOne({ "rounds._id": roundId }).select("_id").lean();
+  const contestId = contest?._id;
+
+  // Kiểm tra xem vòng thi này đã có bất kỳ bài nộp nào chưa
+  const hasSubmissions = await Submission.exists({ round_id: roundId });
+
   // Get unique judges from assignments
   const judgeMap = {};
   for (const assign of assignments) {
@@ -380,22 +430,31 @@ export const checkJudgeCompletion = async (roundId) => {
   for (const judgeId of Object.keys(judgeMap)) {
     const judgeInfo = judgeMap[judgeId];
 
-    // Thu thập tất cả team_id từ các pool mà judge được phân công
-    const teamIds = [];
-    for (const pool of judgeInfo.pools) {
-      if (pool.teams && Array.isArray(pool.teams)) {
-        teamIds.push(...pool.teams.map((t) => t.toString()));
+    let uniqueTeamIds = [];
+    if (judgeInfo.pools.length > 0) {
+      const teamIds = [];
+      for (const pool of judgeInfo.pools) {
+        if (pool.teams && Array.isArray(pool.teams)) {
+          teamIds.push(...pool.teams.map((t) => t.toString()));
+        }
       }
+      uniqueTeamIds = [...new Set(teamIds)];
+    } else if (contestId) {
+      const activeTeams = await Team.find({ contest_id: contestId, status: { $in: ["ACTIVE", "CONFIRMED"] } }).select("_id").lean();
+      uniqueTeamIds = activeTeams.map((t) => t._id.toString());
     }
 
-    const uniqueTeamIds = [...new Set(teamIds)];
-
-    // Số lượng đội có bài nộp trong vòng này trong pool của judge
-    const expectedCount = await Submission.countDocuments({
-      round_id: roundId,
-      team_id: { $in: uniqueTeamIds },
-      status: { $in: ["SUBMITTED", "LATE_APPROVED"] },
-    });
+    // Số lượng đội mong muốn chấm điểm
+    let expectedCount = 0;
+    if (hasSubmissions) {
+      expectedCount = await Submission.countDocuments({
+        round_id: roundId,
+        team_id: { $in: uniqueTeamIds },
+        status: { $in: ["SUBMITTED", "LATE_APPROVED"] },
+      });
+    } else {
+      expectedCount = uniqueTeamIds.length;
+    }
 
     const scoredCount = await Score.countDocuments({
       round_id: roundId,

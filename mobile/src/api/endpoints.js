@@ -13,6 +13,9 @@ export const authApi = {
 
   refresh: (refreshToken) =>
     apiClient.post('/auth/refresh', { refreshToken }),
+
+  resendVerification: (email) =>
+    apiClient.post('/auth/resend-verification', { email }),
 };
 
 // ─── Contest APIs ─────────────────────────────────────────────────────────────

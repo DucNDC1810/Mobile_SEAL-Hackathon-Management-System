@@ -1,16 +1,29 @@
+import mongoose from "mongoose";
 import PresentationSlot from "../models/PresentationSlot.js";
 import Contest from "../models/Contest.js";
 import Team from "../models/Team.js";
 import Pool from "../models/Pool.js";
 import Submission from "../models/Submission.js";
+import Ranking from "../models/Ranking.js";
+
+// ─── Helper ───────────────────────────────────────────────────────────────────
+
+const isFinalRound = async (contestId, roundId) => {
+  if (!contestId || !roundId) return false;
+  const contest = await Contest.findById(contestId).select("rounds");
+  const round = contest?.rounds?.find((r) => r._id.toString() === roundId.toString());
+  return round && round.round_number > 1;
+};
 
 // ─── Admin ───────────────────────────────────────────────────────────────────
 
 export const handleCreateSlot = async (req, res) => {
   try {
     const { contest_id, round_id, pool_id, start_time, end_time, room, note } = req.body;
+    const isFinal = await isFinalRound(contest_id, round_id);
     const slot = await PresentationSlot.create({
-      contest_id, round_id, pool_id,
+      contest_id, round_id,
+      pool_id: isFinal ? null : pool_id,
       start_time, end_time,
       room: room || "",
       note: note || "",
@@ -35,6 +48,8 @@ export const handleBulkCreateSlots = async (req, res) => {
       note = "",
     } = req.body;
 
+    const isFinal = await isFinalRound(contest_id, round_id);
+
     const slotDur  = Math.max(1, slot_duration_min)  * 60 * 1000;
     const breakDur = Math.max(0, break_duration_min) * 60 * 1000;
     const step     = slotDur + breakDur;
@@ -43,7 +58,9 @@ export const handleBulkCreateSlots = async (req, res) => {
 
     // Resolve pool list
     let poolIds = [];
-    if (all_pools) {
+    if (isFinal) {
+      poolIds = [null];
+    } else if (all_pools) {
       const allPools = await Pool.find({ contest_id }, "_id").lean();
       poolIds = allPools.map((p) => p._id.toString());
     } else {
@@ -84,7 +101,12 @@ export const handleGetSlots = async (req, res) => {
     const filter = {};
     if (contest_id) filter.contest_id = contest_id;
     if (round_id)   filter.round_id   = round_id;
-    if (pool_id)    filter.pool_id    = pool_id;
+
+    const isFinal = round_id ? await isFinalRound(contest_id, round_id) : false;
+    if (!isFinal && pool_id) {
+      filter.pool_id = pool_id;
+    }
+
     const slots = await PresentationSlot.find(filter)
       .populate("booked_team_id", "team_name")
       .populate("pool_id", "pool_name")
@@ -109,6 +131,85 @@ export const handleUpdateSlot = async (req, res) => {
     res.json(slot);
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+};
+
+// Random gán các đội finalist đã CONFIRMED vào các slot available của round chung kết.
+// Gọi lại nhiều lần sẽ reset toàn bộ slot đã book (của round này) về available rồi gán lại từ đầu.
+export const handleRandomAssignSlots = async (req, res) => {
+  try {
+    const { contest_id, round_id } = req.body;
+    if (!contest_id || !round_id)
+      return res.status(400).json({ message: "Thiếu contest_id hoặc round_id" });
+
+    const contest = await Contest.findById(contest_id).select("rounds");
+    if (!contest) return res.status(404).json({ message: "Không tìm thấy cuộc thi" });
+
+    const sortedRounds = [...(contest.rounds || [])].sort((a, b) => a.round_number - b.round_number);
+    const currentRoundIndex = sortedRounds.findIndex((r) => r._id.toString() === round_id.toString());
+    if (currentRoundIndex < 0) return res.status(404).json({ message: "Không tìm thấy vòng thi" });
+
+    let teamIds;
+    if (currentRoundIndex === 0) {
+      const teams = await Team.find({ contest_id, status: "CONFIRMED" }, "_id").lean();
+      teamIds = teams.map((t) => t._id);
+    } else {
+      const prevRound = sortedRounds[currentRoundIndex - 1];
+      const qualifiedRankings = await Ranking.find({
+        contest_id,
+        round_id: prevRound._id,
+        qualified: true,
+      }, "team_id").lean();
+      const qualifiedTeamIds = qualifiedRankings.map((r) => r.team_id);
+      const teams = await Team.find({
+        _id: { $in: qualifiedTeamIds },
+        status: "CONFIRMED",
+      }, "_id").lean();
+      teamIds = teams.map((t) => t._id);
+    }
+
+    if (teamIds.length === 0)
+      return res.status(400).json({ message: "Không có đội nào đủ điều kiện để xếp lịch" });
+
+    const slots = await PresentationSlot.find({
+      contest_id,
+      round_id,
+      status: { $ne: "cancelled" },
+    }).sort({ start_time: 1 });
+
+    if (slots.length < teamIds.length)
+      return res.status(400).json({
+        message: `Không đủ slot cho tất cả các đội (${teamIds.length} đội, ${slots.length} slot). Vui lòng tạo thêm slot.`,
+      });
+
+    // Fisher-Yates shuffle
+    const shuffled = [...teamIds];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    const now = new Date();
+    const bulkOps = slots.map((slot, idx) => {
+      const teamId = idx < shuffled.length ? shuffled[idx] : null;
+      return {
+        updateOne: {
+          filter: { _id: slot._id },
+          update: teamId
+            ? { $set: { booked_team_id: teamId, booked_at: now, status: "booked" } }
+            : { $set: { booked_team_id: null, booked_at: null, status: "available" } },
+        },
+      };
+    });
+    await PresentationSlot.bulkWrite(bulkOps);
+
+    const result = await PresentationSlot.find({ contest_id, round_id })
+      .populate("booked_team_id", "team_name")
+      .sort({ start_time: 1 });
+
+    res.json({ message: "Đã random xếp lịch thuyết trình", assigned: shuffled.length, slots: result });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ message: err.message });
   }
 };
 
@@ -182,13 +283,19 @@ export const handleGetMyPoolSlots = async (req, res) => {
       return res.status(403).json({ message: "Đội chưa nộp bài. Vui lòng nộp bài trước khi đăng ký lịch trình bày." });
     }
 
+    const isFinal = round.round_number > 1;
+
+    const query = {
+      contest_id,
+      round_id,
+      status: "available",
+    };
+    if (!isFinal) {
+      query.pool_id = team.pool_id;
+    }
+
     const [slots, myBooking] = await Promise.all([
-      PresentationSlot.find({
-        contest_id,
-        round_id,
-        pool_id: team.pool_id,
-        status: "available",
-      }).sort({ start_time: 1 }),
+      PresentationSlot.find(query).sort({ start_time: 1 }),
       PresentationSlot.findOne({ round_id, booked_team_id: team._id }),
     ]);
 
@@ -221,9 +328,12 @@ export const handleBookSlot = async (req, res) => {
     if (slot.status !== "available" || slot.booked_team_id)
       return res.status(400).json({ message: "Slot không còn trống" });
 
+    const round = await findRoundInContest(slot.contest_id.toString(), slot.round_id.toString());
+    const isFinal = round && round.round_number > 1;
+
     const team = await findStudentTeam(req.user._id, slot.contest_id.toString());
     if (!team) return res.status(404).json({ message: "Không tìm thấy đội thi" });
-    if (team.pool_id?.toString() !== slot.pool_id?.toString())
+    if (!isFinal && team.pool_id?.toString() !== slot.pool_id?.toString())
       return res.status(403).json({ message: "Slot này không thuộc pool của đội bạn" });
 
     // Nếu vòng thi hiện tại không phải vòng đầu tiên, kiểm tra xem đội có lọt vào vòng này không (qualified ở vòng trước)
@@ -244,7 +354,6 @@ export const handleBookSlot = async (req, res) => {
       }
     }
 
-    const round = await findRoundInContest(slot.contest_id.toString(), slot.round_id.toString());
     if (round?.submission_deadline && new Date() > new Date(round.submission_deadline))
       return res.status(400).json({ message: "Đã qua hạn nộp bài, không thể đăng ký lịch trình bày nữa." });
 
@@ -259,11 +368,17 @@ export const handleBookSlot = async (req, res) => {
     if (existing)
       return res.status(400).json({ message: "Đội đã có lịch trình bày cho vòng này" });
 
-    slot.booked_team_id = team._id;
-    slot.booked_at      = new Date();
-    slot.status         = "booked";
-    await slot.save();
-    res.json(slot);
+    // Atomic conditional update: chỉ thắng nếu slot vẫn còn "available" tại thời điểm ghi.
+    // Tránh race condition khi 2 đội cùng book 1 slot gần như đồng thời.
+    const updated = await PresentationSlot.findOneAndUpdate(
+      { _id: slot._id, status: "available", booked_team_id: null },
+      { $set: { booked_team_id: team._id, booked_at: new Date(), status: "booked" } },
+      { new: true }
+    );
+    if (!updated)
+      return res.status(409).json({ message: "Slot vừa được đội khác đặt trước, vui lòng chọn slot khác" });
+
+    res.json(updated);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

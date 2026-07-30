@@ -1,9 +1,7 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Android emulator: 10.0.2.2 maps to host machine's localhost
-// For physical device on same WiFi: replace with your machine's local IP (e.g., 192.168.x.x)
-export const BASE_URL = 'http://192.168.100.137:5001';
+export const BASE_URL = 'https://seal-hackathon-management-system-t7vv.onrender.com';
 
 // Minimal event bus to signal AuthContext to force logout
 const _listeners = {};
