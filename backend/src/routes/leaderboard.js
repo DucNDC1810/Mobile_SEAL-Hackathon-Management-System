@@ -4,6 +4,7 @@ import Score from "../models/Score.js";
 import Team from "../models/Team.js";
 import Contest from "../models/Contest.js";
 import Submission from "../models/Submission.js";
+import Pool from "../models/Pool.js";
 
 const router = Router();
 
@@ -11,30 +12,27 @@ const router = Router();
 router.get("/contests/:contest_id/rounds", async (req, res, next) => {
   try {
     const { contest_id } = req.params;
-    let rounds = await Round.find({ contest_id }).sort({ round_start: 1 });
 
-    if (rounds.length === 0) {
-      const contest = await Contest.findById(contest_id);
-      if (contest && contest.rounds && contest.rounds.length > 0) {
-        const createdRounds = [];
-        for (const r of contest.rounds) {
-          let existingRound = await Round.findOne({ contest_id, name: r.name });
-          if (!existingRound) {
-            existingRound = await Round.create({
-              _id: r._id,
-              contest_id,
-              name: r.name,
-              type: r.round_number === 2 || r.name.toLowerCase().includes("chung kết") || r.name.toLowerCase().includes("final") ? "FINAL" : "PRELIMINARY",
-              is_active: r.is_active,
-              round_start: r.start_time || new Date(),
-              round_end: r.end_time || r.submission_deadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-            });
-          }
-          createdRounds.push(existingRound);
-        }
-        rounds = createdRounds;
+    const contest = await Contest.findById(contest_id);
+    if (contest && contest.rounds && contest.rounds.length > 0) {
+      for (const r of contest.rounds) {
+        await Round.findOneAndUpdate(
+          { _id: r._id },
+          {
+            contest_id,
+            name: r.name,
+            type: r.round_number === 2 || r.name.toLowerCase().includes("chung kết") || r.name.toLowerCase().includes("final") ? "FINAL" : "PRELIMINARY",
+            is_active: r.is_active,
+            scoring_locked: r.scoring_locked,
+            round_start: r.start_time || new Date(),
+            round_end: r.end_time || r.submission_deadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+          },
+          { upsert: true }
+        );
       }
     }
+
+    const rounds = await Round.find({ contest_id }).sort({ round_start: 1 });
 
     return res.status(200).json({
       success: true,
@@ -71,8 +69,18 @@ router.get("/:round_id/tiebreak", async (req, res, next) => {
     // 3. Find active teams in the contest
     const teams = await Team.find({
       contest_id: round.contest_id,
-      status: "ACTIVE",
+      status: { $in: ["ACTIVE", "CONFIRMED"] },
     });
+
+    const pools = await Pool.find({ round_id }).lean();
+    const teamPoolMap = {};
+    for (const pool of pools) {
+      if (pool.teams) {
+        for (const tId of pool.teams) {
+          teamPoolMap[tId.toString()] = pool.pool_name;
+        }
+      }
+    }
 
     // 4. Find all final normal scores for this round
     const scores = await Score.find({
@@ -91,6 +99,9 @@ router.get("/:round_id/tiebreak", async (req, res, next) => {
       scoreMap[teamIdStr].push(score.weighted_avg_score || 0);
     }
 
+    const isFinalRound = round.type === "FINAL" || round.name?.toLowerCase().includes("chung kết") || round.name?.toLowerCase().includes("final");
+    const fallbackGroupName = isFinalRound ? "Kết quả chung cuộc" : "Chưa phân bảng";
+
     // Calculate average score for each team
     const teamList = [];
     for (const team of teams) {
@@ -102,7 +113,7 @@ router.get("/:round_id/tiebreak", async (req, res, next) => {
       teamList.push({
         team_id: team._id,
         team_name: team.team_name || team.name || "Unknown Team",
-        assigned_group: team.assigned_group || "Chưa phân bảng",
+        assigned_group: teamPoolMap[team._id.toString()] || team.assigned_group || fallbackGroupName,
         weighted_avg_score: Math.round(avgScore * 100) / 100,
         tiebreak_rule: team.tiebreak_rule || null,
         tiebreak_status: team.tiebreak_status || null,
@@ -113,7 +124,7 @@ router.get("/:round_id/tiebreak", async (req, res, next) => {
     // Group teams by assigned_group
     const groupsMap = {};
     for (const team of teamList) {
-      const groupName = team.assigned_group || "Chưa phân bảng";
+      const groupName = team.assigned_group || fallbackGroupName;
       if (!groupsMap[groupName]) {
         groupsMap[groupName] = [];
       }
@@ -181,11 +192,27 @@ router.post("/:round_id/tiebreak/apply", async (req, res, next) => {
 
     const boundary = round.top_n || 6;
 
+    const pools = await Pool.find({ round_id }).lean();
+    const teamPoolMap = {};
+    for (const pool of pools) {
+      if (pool.teams) {
+        for (const tId of pool.teams) {
+          teamPoolMap[tId.toString()] = pool.pool_name;
+        }
+      }
+    }
+
+    const isFinalRound = round.type === "FINAL" || round.name?.toLowerCase().includes("chung kết") || round.name?.toLowerCase().includes("final");
+    const fallbackGroupName = isFinalRound ? "Kết quả chung cuộc" : "Chưa phân bảng";
+
     // Lấy tất cả đội trong group này
-    const teams = await Team.find({
+    const allTeams = await Team.find({
       contest_id: round.contest_id,
-      status: "ACTIVE",
-      assigned_group: group_name,
+      status: { $in: ["ACTIVE", "CONFIRMED"] },
+    });
+    const teams = allTeams.filter(t => {
+      const pName = teamPoolMap[t._id.toString()] || t.assigned_group || fallbackGroupName;
+      return pName === group_name;
     });
 
     // Lấy điểm số
@@ -355,8 +382,18 @@ router.get("/:round_id", async (req, res, next) => {
     // 3. Find active teams in the contest
     const teams = await Team.find({
       contest_id: round.contest_id,
-      status: "ACTIVE",
+      status: { $in: ["ACTIVE", "CONFIRMED"] },
     });
+
+    const pools = await Pool.find({ round_id }).lean();
+    const teamPoolMap = {};
+    for (const pool of pools) {
+      if (pool.teams) {
+        for (const tId of pool.teams) {
+          teamPoolMap[tId.toString()] = pool.pool_name;
+        }
+      }
+    }
 
     // 4. Find all final normal scores for this round
     const scores = await Score.find({
@@ -375,30 +412,36 @@ router.get("/:round_id", async (req, res, next) => {
       scoreMap[teamIdStr].push(score.weighted_avg_score || 0);
     }
 
+    const submissions = await Submission.find({ round_id });
+    const submissionMap = {};
+    for (const sub of submissions) {
+      submissionMap[sub.team_id.toString()] = sub.submitted_at || sub.created_at || null;
+    }
+
+    const isFinalRound = round.type === "FINAL" || round.name?.toLowerCase().includes("chung kết") || round.name?.toLowerCase().includes("final");
+    const fallbackGroupName = isFinalRound ? "Kết quả chung cuộc" : "Chưa phân bảng";
+
     // Calculate average score for each team and map properties
     const teamList = [];
     for (const team of teams) {
       const teamScores = scoreMap[team._id.toString()];
       if (!teamScores || teamScores.length === 0) {
-        // Exclude teams without final scores or default them? 
-        // Let's include them with score 0 so they still appear on the leaderboard, or exclude them.
-        // The prompt says "Chỉ lấy scores có score_type = NORMAL và is_final = true"
-        // Let's exclude teams that don't have any final scores to match "Chỉ lấy scores..."
         continue;
       }
       const avgScore = teamScores.reduce((sum, val) => sum + val, 0) / teamScores.length;
       teamList.push({
         team_id: team._id,
         team_name: team.team_name || team.name || "Unknown Team",
-        assigned_group: team.assigned_group || "Chưa phân bảng",
+        assigned_group: teamPoolMap[team._id.toString()] || team.assigned_group || fallbackGroupName,
         weighted_avg_score: Math.round(avgScore * 100) / 100,
+        submission_time: submissionMap[team._id.toString()] || null,
       });
     }
 
     // 5. Group teams by assigned_group
     const groupsMap = {};
     for (const team of teamList) {
-      const groupName = team.assigned_group || "Chưa phân bảng";
+      const groupName = team.assigned_group || fallbackGroupName;
       if (!groupsMap[groupName]) {
         groupsMap[groupName] = [];
       }
@@ -407,8 +450,18 @@ router.get("/:round_id", async (req, res, next) => {
 
     const groups = [];
     for (const [groupName, groupTeams] of Object.entries(groupsMap)) {
-      // Sort teams in each group by weighted_avg_score DESC
-      groupTeams.sort((a, b) => b.weighted_avg_score - a.weighted_avg_score);
+      // Sort teams in each group by weighted_avg_score DESC, then submission_time ASC (earlier submission first)
+      groupTeams.sort((a, b) => {
+        if (b.weighted_avg_score !== a.weighted_avg_score) {
+          return b.weighted_avg_score - a.weighted_avg_score;
+        }
+        if (a.submission_time && b.submission_time) {
+          return new Date(a.submission_time) - new Date(b.submission_time);
+        }
+        if (a.submission_time) return -1;
+        if (b.submission_time) return 1;
+        return 0;
+      });
 
       // Assign rank
       const rankedTeams = groupTeams.map((team, index) => ({

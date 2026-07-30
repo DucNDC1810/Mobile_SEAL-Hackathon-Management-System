@@ -3,6 +3,7 @@ import Round from "../models/Round.js";
 import Contest from "../models/Contest.js";
 import Team from "../models/Team.js";
 import Score from "../models/Score.js";
+import Pool from "../models/Pool.js";
 
 const router = Router();
 
@@ -51,8 +52,18 @@ router.get("/:round_id", async (req, res, next) => {
     // 4. Find active teams in the contest
     const teams = await Team.find({
       contest_id: round.contest_id,
-      status: "ACTIVE",
+      status: { $in: ["ACTIVE", "CONFIRMED"] },
     });
+
+    const pools = await Pool.find({ round_id }).lean();
+    const teamPoolMap = {};
+    for (const pool of pools) {
+      if (pool.teams) {
+        for (const tId of pool.teams) {
+          teamPoolMap[tId.toString()] = pool.pool_name;
+        }
+      }
+    }
 
     // 5. Find all final normal scores for this round
     const scores = await Score.find({
@@ -71,6 +82,9 @@ router.get("/:round_id", async (req, res, next) => {
       scoreMap[teamIdStr].push(score.weighted_avg_score || 0);
     }
 
+    const isFinalRound = round.type === "FINAL" || round.name?.toLowerCase().includes("chung kết") || round.name?.toLowerCase().includes("final");
+    const fallbackGroupName = isFinalRound ? "Kết quả chung cuộc" : "Chưa phân bảng";
+
     // Calculate average score for each team
     const teamList = [];
     for (const team of teams) {
@@ -79,7 +93,7 @@ router.get("/:round_id", async (req, res, next) => {
         teamList.push({
           team_id: team._id,
           team_name: team.team_name || team.name || "Unknown Team",
-          assigned_group: team.assigned_group || "Chưa phân bảng",
+          assigned_group: teamPoolMap[team._id.toString()] || team.assigned_group || fallbackGroupName,
           weighted_avg_score: 0,
         });
         continue;
@@ -88,7 +102,7 @@ router.get("/:round_id", async (req, res, next) => {
       teamList.push({
         team_id: team._id,
         team_name: team.team_name || team.name || "Unknown Team",
-        assigned_group: team.assigned_group || "Chưa phân bảng",
+        assigned_group: teamPoolMap[team._id.toString()] || team.assigned_group || fallbackGroupName,
         weighted_avg_score: Math.round(avgScore * 100) / 100,
       });
     }
@@ -96,7 +110,7 @@ router.get("/:round_id", async (req, res, next) => {
     // Group teams by assigned_group to rank them in-group
     const groupsMap = {};
     for (const team of teamList) {
-      const groupName = team.assigned_group || "Chưa phân bảng";
+      const groupName = team.assigned_group || fallbackGroupName;
       if (!groupsMap[groupName]) {
         groupsMap[groupName] = [];
       }

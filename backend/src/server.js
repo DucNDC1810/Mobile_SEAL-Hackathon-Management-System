@@ -1,4 +1,12 @@
 import "dotenv/config";
+import dns from "dns";
+
+// Một số máy dev có DNS resolver nội bộ (vd. 127.0.0.1) không hoạt động,
+// khiến Node.js không resolve được SRV record của MongoDB Atlas dù hệ điều
+// hành vẫn resolve DNS bình thường. Ép dùng DNS công khai để tránh phụ thuộc
+// vào cấu hình mạng của từng máy.
+dns.setServers(["8.8.8.8", "1.1.1.1"]);
+
 import { createServer } from "http";
 import express from "express";
 import cookieParser from "cookie-parser";
@@ -32,6 +40,8 @@ import finalSubmissionRoute from "./routes/finalSubmissionRoute.js";
 import teamRankingRoute from "./routes/teamRanking.js";
 import adminRankingRoute from "./routes/adminRankingRoute.js";
 import prizeRoute from "./routes/prize.js";
+import aiChatRoute from "./routes/aiChatRoute.js";
+import uploadRoute from "./routes/uploadRoute.js";
 import passport from "./config/passport.js";
 import { connectDB } from "./config/db.js";
 import { initSocket } from "./socket/index.js";
@@ -90,6 +100,18 @@ app.use("/api/submission", finalSubmissionRoute);
 app.use("/api/ranking", teamRankingRoute);
 app.use("/api/admin/ranking", adminRankingRoute);
 app.use("/api/prize", prizeRoute);
+app.use("/api/ai", aiChatRoute);
+app.use("/api/upload", uploadRoute);
+
+// Global Error Handler — đảm bảo mọi lỗi API luôn trả về JSON sạch thay vì HTML 500
+app.use((err, req, res, next) => {
+  console.error("[ServerError]", err);
+  const status = err.statusCode || err.status || 500;
+  res.status(status).json({
+    success: false,
+    message: err.message || "Lỗi máy chủ",
+  });
+});
 
 initSocket(httpServer);
 
@@ -105,6 +127,15 @@ connectDB().then(() => {
       console.error("[server] HTTP server error:", err);
     }
     process.exit(1);
+  });
+
+  // Migration: Drop legacy strict unique index on JudgeAssignment that broke external invitations
+  import("./models/JudgeAssignment.js").then(async ({ default: JudgeAssignment }) => {
+    try {
+      await JudgeAssignment.collection.dropIndex("judge_id_1_round_id_1");
+    } catch {
+      // index already dropped or not existing
+    }
   });
 
   // Migration: Normalize legacy lowercase team status values in the database to uppercase to match Mongoose schema enums

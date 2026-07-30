@@ -10,9 +10,10 @@ WebBrowser.maybeCompleteAuthSession();
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser]           = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [authError, setAuthError] = useState(null);
+  const [user, setUser]                 = useState(null);
+  const [loading, setLoading]           = useState(true);
+  const [authError, setAuthError]       = useState(null);
+  const [unverifiedEmail, setUnverifiedEmail] = useState(null);
 
   // ─── Bootstrap: load stored session ─────────────────────────────────────
   useEffect(() => {
@@ -45,6 +46,7 @@ export const AuthProvider = ({ children }) => {
   // ─── Email / Password login ────────────────────────────────────────────
   const signIn = useCallback(async (email, password) => {
     setAuthError(null);
+    setUnverifiedEmail(null);
     try {
       const res = await authApi.signIn(email, password);
       // Backend trả về: { success, data: { ...user, accessToken } }
@@ -60,6 +62,21 @@ export const AuthProvider = ({ children }) => {
     } catch (err) {
       const msg = err.response?.data?.message || 'Đăng nhập thất bại';
       setAuthError(msg);
+      // Backend trả 403 khi tài khoản local chưa xác nhận email
+      if (err.response?.status === 403) {
+        setUnverifiedEmail(email);
+      }
+      return { success: false, message: msg };
+    }
+  }, []);
+
+  // ─── Resend verification email ──────────────────────────────────────────
+  const resendVerification = useCallback(async (email) => {
+    try {
+      await authApi.resendVerification(email);
+      return { success: true };
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Gửi lại email xác nhận thất bại';
       return { success: false, message: msg };
     }
   }, []);
@@ -137,10 +154,12 @@ export const AuthProvider = ({ children }) => {
       user,
       loading,
       authError,
+      unverifiedEmail,
       signIn,
       signInWithGoogle,
       signOut,
       refreshUser,
+      resendVerification,
       hasRole,
       primaryRole,
       isStudent: hasRole('contestant'),

@@ -5,7 +5,9 @@ import MentorAssignment from "../models/MentorAssignment.js";
 import Invitation from "../models/Invitation.js";
 import Contest from "../models/Contest.js";
 import User from "../models/User.js";
-import { sendJudgeInvitationEmail } from "./emailService.js";
+import Pool from "../models/Pool.js";
+import { sendJudgeInvitationEmail, sendJudgeAssignedEmail } from "./emailService.js";
+import { notifyJudgeAssignedToPool } from "./notificationService.js";
 
 // ─── assignJudge ──────────────────────────────────────────────────────────────
 
@@ -35,8 +37,12 @@ export const assignJudge = async ({
 
   // ── EXTERNAL flow ──────────────────────────────────────────────────────────
   if (judge_type === "EXTERNAL") {
-    if (!external_email) {
+    if (!external_email || !external_email.trim()) {
       const err = new Error("Vui lòng nhập email của giám khảo ngoài"); err.statusCode = 400; throw err;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(external_email.trim())) {
+      const err = new Error("Địa chỉ email của giám khảo ngoài không hợp lệ"); err.statusCode = 400; throw err;
     }
     const email = external_email.toLowerCase().trim();
 
@@ -54,6 +60,17 @@ export const assignJudge = async ({
       err.statusCode = 409; throw err;
     }
     if (existingUser) {
+      // Chặn tài khoản contestant/thí sinh không phải judge/mentor/admin/organizer
+      const hasEligibleRole = existingUser.roles?.some(
+        (r) => r.role_name === "judge" || r.role_name === "mentor" || r.role_name === "admin" || r.role_name === "organizer"
+      );
+      if (!hasEligibleRole) {
+        const err = new Error(
+          `Tài khoản ${existingUser.full_name || email} (${email}) là tài khoản Thí sinh (Contestant) — Không thể phân công làm Giám khảo!`
+        );
+        err.statusCode = 400; throw err;
+      }
+
       // Chặn mentor chấm bảng mình đang mentor
       const isMentorOfThisPool = await MentorAssignment.exists({
         mentor_id: existingUser._id, contest_id, round_id, board_id: pool_id,
@@ -93,7 +110,21 @@ export const assignJudge = async ({
         { path: "assigned_by", select: "full_name email" },
       ]);
 
-      return { assignment, warnings: [] };
+      // Gửi mail thông báo phân công cho thành viên nội bộ
+      const poolObj = await Pool.findById(pool_id).select("pool_name");
+      sendJudgeAssignedEmail(
+        email,
+        existingUser.full_name || email,
+        contest.title,
+        poolObj?.pool_name || "Bảng đấu"
+      ).catch(e => console.error("[sendJudgeAssignedEmail]", e));
+
+      return {
+        assignment,
+        warnings: [
+          `Email "${email}" thuộc tài khoản nội bộ (${existingUser.full_name || email}). Hệ thống đã tự động phân công trực tiếp!`
+        ],
+      };
     }
 
     const existingInv = await Invitation.findOne({ contest_id, email, role: "judge", status: "pending" });
@@ -150,10 +181,10 @@ export const assignJudge = async ({
   }
 
   const hasEligibleRole = judge.roles?.some(
-    r => r.role_name === "judge" || r.role_name === "mentor"
+    r => r.role_name === "judge" || r.role_name === "mentor" || r.role_name === "admin" || r.role_name === "organizer"
   );
   if (!hasEligibleRole) {
-    const err = new Error("Người dùng này chưa được gán quyền Judge hoặc Mentor");
+    const err = new Error(`Tài khoản ${judge.full_name || judge.email} là tài khoản Thí sinh (Contestant) — Không thể phân công làm Giám khảo!`);
     err.statusCode = 400; throw err;
   }
 
@@ -181,6 +212,29 @@ export const assignJudge = async ({
     { path: "pool_id",     select: "pool_name" },
     { path: "assigned_by", select: "full_name email" },
   ]);
+
+  // Gửi thông báo thời gian thực và email cho Giám khảo
+  try {
+    const judgeUser = assignment.judge_id;
+    const poolObj = assignment.pool_id;
+    if (judgeUser && poolObj) {
+      await notifyJudgeAssignedToPool({
+        user_id: judgeUser._id,
+        contestTitle: contest.title,
+        poolName: poolObj.pool_name,
+        ref_id: contest._id,
+      });
+
+      sendJudgeAssignedEmail(
+        judgeUser.email,
+        judgeUser.full_name || "Giám khảo",
+        contest.title,
+        poolObj.pool_name
+      ).catch((mailErr) => console.error("[sendJudgeAssignedEmail error]", mailErr));
+    }
+  } catch (notifErr) {
+    console.error("[assignJudge notification error]", notifErr);
+  }
 
   return { assignment, warnings: [] };
 };
@@ -220,7 +274,7 @@ export const getMyJudgeAssignments = async (judgeId, contestId, roundId) => {
   if (contestId) query.contest_id = contestId;
   if (roundId)   query.round_id   = roundId;
 
-  return JudgeAssignment.find(query)
+  const assignments = await JudgeAssignment.find(query)
     .populate("contest_id", "title start_date end_date status rounds score_criteria")
     .populate({
       path: "pool_id",
@@ -232,4 +286,30 @@ export const getMyJudgeAssignments = async (judgeId, contestId, roundId) => {
       },
     })
     .sort({ created_at: -1 });
+
+  const Team = mongoose.models.Team || mongoose.model("Team");
+  const results = [];
+
+  for (const doc of assignments) {
+    const obj = doc.toObject();
+    if (!obj.pool_id) {
+      // Fetch all active/confirmed teams in this contest to display as finalist teams
+      const activeTeams = await Team.find({
+        contest_id: obj.contest_id?._id || obj.contest_id,
+        status: { $in: ["ACTIVE", "CONFIRMED"] }
+      })
+      .select("team_name status topic_id members leader_id")
+      .populate({ path: "topic_id", select: "title" })
+      .lean();
+
+      obj.pool_id = {
+        _id: null,
+        pool_name: "Chung kết",
+        teams: activeTeams
+      };
+    }
+    results.push(obj);
+  }
+
+  return results;
 };

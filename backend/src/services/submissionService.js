@@ -72,6 +72,12 @@ export const createSubmission = async ({ repo_url, demo_url, slide_url, team_id,
     throw err;
   }
 
+  if (team.status !== 'CONFIRMED' && !(team.status === 'ACTIVE' && team.contest_id)) {
+    const err = new Error("Đội thi của bạn chưa được admin phê duyệt, không thể nộp bài");
+    err.statusCode = 403;
+    throw err;
+  }
+
   const contest = await Contest.findOne({ "rounds._id": round_id });
   if (!contest) {
     const err = new Error("Không tìm thấy vòng thi");
@@ -83,6 +89,18 @@ export const createSubmission = async ({ repo_url, demo_url, slide_url, team_id,
   if (!round) {
     const err = new Error("Không tìm thấy vòng thi");
     err.statusCode = 404;
+    throw err;
+  }
+
+  if (round.scoring_locked) {
+    const err = new Error("Vòng thi đã khóa chấm điểm, không thể cập nhật bài nộp");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!round.is_active) {
+    const err = new Error("Vòng thi này hiện không hoạt động, không thể nộp bài");
+    err.statusCode = 400;
     throw err;
   }
 
@@ -142,6 +160,31 @@ export const createSubmission = async ({ repo_url, demo_url, slide_url, team_id,
     },
   });
 
+  // Gửi thông báo cho Mentor nếu đội thi đã có Mentor phân công trong vòng đấu
+  try {
+    const MentorAssignment = (await import("../models/MentorAssignment.js")).default;
+    const mentorAssign = await MentorAssignment.findOne({
+      contest_id: contest._id,
+      round_id,
+      team_id,
+    });
+
+    if (mentorAssign && mentorAssign.mentor_id) {
+      await sendNotification({
+        recipientIds: [mentorAssign.mentor_id.toString()],
+        type: "general",
+        payload: {
+          title: "Đội thi của bạn đã nộp bài",
+          message: `Đội "${team.team_name}" mà bạn làm Mentor đã nộp bài cho vòng "${round.name}" của cuộc thi "${contest.title}".`,
+          ref_id: team._id,
+          ref_type: "Team",
+        },
+      });
+    }
+  } catch (notifErr) {
+    console.error("[createSubmission notification error]", notifErr);
+  }
+
   return submission;
 };
 
@@ -159,7 +202,14 @@ export const getSubmissions = async ({ round_id, status }) => {
   if (status) query.status = status;
 
   return await Submission.find(query)
-    .populate("team_id", "team_name")
+    .populate({
+      path: "team_id",
+      select: "team_name contest_id pool_id",
+      populate: {
+        path: "pool_id",
+        select: "pool_name name"
+      }
+    })
     .sort({ submitted_at: -1 });
 };
 

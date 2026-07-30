@@ -1,5 +1,6 @@
 import {
   createUser,
+  checkEmailExists,
   authenticateUser,
   refreshAccessToken,
   verifyEmail,
@@ -11,10 +12,15 @@ import {
 
 // ─── cookie config ──────────────────────────────────────────────────────────
 
+// Frontend (Vercel) và backend (Render) là 2 domain khác nhau — cookie cross-site
+// chỉ được trình duyệt gửi kèm khi sameSite:"none" + secure:true. "strict"/"lax"
+// khiến refreshToken không bao giờ đến được server, làm user bị đăng xuất ngay
+// khi access token (ngắn hạn) hết hạn.
+const isProd = process.env.NODE_ENV === "production";
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "strict",
+  secure: isProd,
+  sameSite: isProd ? "none" : "lax",
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 ngày
 };
 
@@ -49,6 +55,14 @@ export const signUp = async (req, res) => {
       });
     }
 
+    // validate phone format
+    if (phone && !/^[0-9]{10}$/.test(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Số điện thoại phải có đúng 10 chữ số",
+      });
+    }
+
     // delegate to service
     const user = await createUser({ full_name, email, password, phone });
 
@@ -62,6 +76,27 @@ export const signUp = async (req, res) => {
     res
       .status(error.statusCode || 500)
       .json({ success: false, message: error.message || "Lỗi máy chủ" });
+  }
+};
+
+// ─── checkEmail ──────────────────────────────────────────────────────────────
+
+export const checkEmail = async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email là bắt buộc" });
+    }
+    const user = await checkEmailExists(email);
+    return res.status(200).json({
+      success: true,
+      exists: !!user,
+      user: user ? { _id: user._id, full_name: user.full_name, email: user.email, roles: user.roles } : null,
+      message: user ? `Email ${email} đã được tạo tài khoản trong hệ thống` : "Email chưa được sử dụng",
+    });
+  } catch (error) {
+    console.error("[checkEmail]", error);
+    res.status(500).json({ success: false, message: "Lỗi máy chủ khi kiểm tra email" });
   }
 };
 
@@ -86,7 +121,8 @@ export const signIn = async (req, res) => {
       password,
     });
 
-    // set httpOnly cookie (for web)
+    // set httpOnly cookie (web) — mobile không có cookie jar cross-site nên
+    // vẫn cần refreshToken trong body để tự lưu và gửi lại thủ công.
     res.cookie("refreshToken", refreshToken, REFRESH_COOKIE_OPTIONS);
 
     res.status(200).json({
@@ -211,7 +247,7 @@ export const completeProfileHandler = async (req, res) => {
 
 export const refresh = async (req, res) => {
   try {
-    // Support both cookie (web) and body (mobile)
+    // Support both cookie (web) and body (mobile — no cross-site cookie jar)
     const token = req.cookies?.refreshToken || req.body?.refreshToken;
 
     // delegate to service

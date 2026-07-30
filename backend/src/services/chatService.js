@@ -60,7 +60,7 @@ export const getMessages = async ({ contestId, roundId, teamId, mentorId, page =
     .sort({ created_at: 1 })
     .skip(skip)
     .limit(limit)
-    .populate("sender_id", "full_name email");
+    .populate("sender_id", "full_name email avatar_url");
 
   const total = await ChatMessage.countDocuments({
     contest_id: contestId,
@@ -84,7 +84,7 @@ export const sendMessage = async ({ contestId, roundId, teamId, mentorId, sender
     read_by: [senderId],
   });
 
-  return await msg.populate("sender_id", "full_name email");
+  return await msg.populate("sender_id", "full_name email avatar_url");
 };
 
 export const markMessagesRead = async ({ contestId, roundId, teamId, mentorId, userId }) => {
@@ -104,7 +104,7 @@ export const markMessagesRead = async ({ contestId, roundId, teamId, mentorId, u
 export const getTeamMentors = async (teamId, userId) => {
   const assignments = await MentorAssignment.find({ team_id: teamId })
     .populate("contest_id", "title status rounds")
-    .populate("mentor_id", "full_name email");
+    .populate("mentor_id", "full_name email avatar_url");
 
   const result = await Promise.all(
     assignments.map(async (a) => {
@@ -145,6 +145,7 @@ export const getTeamMentors = async (teamId, userId) => {
         mentorId: a.mentor_id._id,
         mentorName: a.mentor_id.full_name,
         mentorEmail: a.mentor_id.email,
+        mentorAvatar: a.mentor_id.avatar_url,
         chatOpen,
         lastMessage: lastMsg || null,
       };
@@ -161,46 +162,49 @@ export const getMentorConversations = async (mentorId) => {
     .populate("team_id", "team_name leader_id members");
 
   const conversations = await Promise.all(
-    assignments.map(async (a) => {
-      const contest = a.contest_id;
-      const round = contest?.rounds?.find((r) => r._id.toString() === a.round_id.toString());
+    assignments
+      // Bỏ qua các phân công trỏ tới contest/team đã bị xóa để tránh crash danh sách
+      .filter((a) => a.contest_id && a.team_id)
+      .map(async (a) => {
+        const contest = a.contest_id;
+        const round = contest.rounds?.find((r) => r._id.toString() === a.round_id.toString());
 
-      const lastMsg = await ChatMessage.findOne({
-        contest_id: a.contest_id._id,
-        round_id: a.round_id,
-        team_id: a.team_id._id,
-        mentor_id: mentorId,
+        const lastMsg = await ChatMessage.findOne({
+          contest_id: contest._id,
+          round_id: a.round_id,
+          team_id: a.team_id._id,
+          mentor_id: mentorId,
+        })
+          .sort({ created_at: -1 })
+          .select("content created_at sender_id");
+
+        const unreadCount = await ChatMessage.countDocuments({
+          contest_id: contest._id,
+          round_id: a.round_id,
+          team_id: a.team_id._id,
+          mentor_id: mentorId,
+          read_by: { $ne: mentorId },
+        });
+
+        const chatOpen = contest.status !== "closed" && round && !round.scoring_locked && round.is_active;
+
+        return {
+          assignmentId: a._id,
+          contestId: contest._id,
+          contestTitle: contest.title,
+          contestStatus: contest.status,
+          roundId: a.round_id,
+          roundName: round?.name || "—",
+          roundActive: round?.is_active || false,
+          roundLocked: round?.scoring_locked || false,
+          teamId: a.team_id._id,
+          teamName: a.team_id.team_name,
+          mentorId: mentorId,
+          chatOpen,
+          lastMessage: lastMsg || null,
+          unreadCount,
+        };
       })
-        .sort({ created_at: -1 })
-        .select("content created_at sender_id");
-
-      const unreadCount = await ChatMessage.countDocuments({
-        contest_id: a.contest_id._id,
-        round_id: a.round_id,
-        team_id: a.team_id._id,
-        mentor_id: mentorId,
-        read_by: { $ne: mentorId },
-      });
-
-      const chatOpen = contest.status !== "closed" && round && !round.scoring_locked && round.is_active;
-
-      return {
-        assignmentId: a._id,
-        contestId: a.contest_id._id,
-        contestTitle: contest.title,
-        contestStatus: contest.status,
-        roundId: a.round_id,
-        roundName: round?.name || "—",
-        roundActive: round?.is_active || false,
-        roundLocked: round?.scoring_locked || false,
-        teamId: a.team_id._id,
-        teamName: a.team_id.team_name,
-        mentorId: mentorId,
-        chatOpen,
-        lastMessage: lastMsg || null,
-        unreadCount,
-      };
-    })
   );
 
   return conversations;

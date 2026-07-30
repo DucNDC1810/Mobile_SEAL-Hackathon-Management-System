@@ -12,7 +12,7 @@ import {
 
 const generateAccessToken = (userId) =>
   jwt.sign({ id: userId }, process.env.JWT_ACCESS_SECRET, {
-    expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "7d",
+    expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "24h",
   });
 
 const generateRefreshToken = (userId) =>
@@ -23,6 +23,16 @@ const generateRefreshToken = (userId) =>
 // ─── signUp ─────────────────────────────────────────────────────────────────
 
 /**
+ * Check if email already exists in system.
+ * @param {string} email
+ * @returns {Promise<boolean>}
+ */
+export const checkEmailExists = async (email) => {
+  if (!email) return null;
+  return User.findOne({ email: email.toLowerCase().trim() }).select("full_name email roles");
+};
+
+/**
  * Tạo user mới với role "contestant" mặc định.
  * @returns {Object} user document (không có password_hash)
  * @throws {Error} với message nếu email trùng
@@ -31,7 +41,7 @@ export const createUser = async ({ full_name, email, password, phone }) => {
   // check duplicate
   const duplicate = await User.findOne({ email: email.toLowerCase() });
   if (duplicate) {
-    const err = new Error("Email đã tồn tại");
+    const err = new Error(`Email ${email} đã được tạo tài khoản trong hệ thống`);
     err.statusCode = 409;
     throw err;
   }
@@ -106,6 +116,12 @@ export const authenticateUser = async ({ identifier, password }) => {
   if (!isMatch) {
     const err = new Error("Email hoặc mật khẩu không đúng");
     err.statusCode = 401;
+    throw err;
+  }
+
+  if (user.provider === "local" && !user.is_verified) {
+    const err = new Error("Vui lòng xác nhận email trước khi đăng nhập. Kiểm tra hộp thư của bạn hoặc yêu cầu gửi lại email xác nhận.");
+    err.statusCode = 403;
     throw err;
   }
 

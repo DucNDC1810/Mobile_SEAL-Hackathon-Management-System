@@ -10,21 +10,36 @@ import { useAuth } from '../../contexts/AuthContext';
 import { colors, spacing, radius, typography } from '../../theme';
 
 export default function LoginScreen() {
-  const { signIn, signInWithGoogle, authError } = useAuth();
+  const { signIn, signInWithGoogle, authError, unverifiedEmail, resendVerification } = useAuth();
   const [email,       setEmail]       = useState('');
   const [password,    setPassword]    = useState('');
   const [showPass,    setShowPass]    = useState(false);
   const [loadingEmail,  setLoadingEmail]  = useState(false);
   const [loadingGoogle, setLoadingGoogle] = useState(false);
+  const [loadingResend, setLoadingResend] = useState(false);
+  const [resendDone,    setResendDone]    = useState(false);
 
   const handleEmailLogin = async () => {
     if (!email.trim() || !password.trim()) {
       Alert.alert('Thiếu thông tin', 'Vui lòng nhập email và mật khẩu');
       return;
     }
+    setResendDone(false);
     setLoadingEmail(true);
     await signIn(email.trim().toLowerCase(), password);
     setLoadingEmail(false);
+  };
+
+  const handleResendVerification = async () => {
+    if (!unverifiedEmail) return;
+    setLoadingResend(true);
+    const result = await resendVerification(unverifiedEmail);
+    setLoadingResend(false);
+    if (result.success) {
+      setResendDone(true);
+    } else {
+      Alert.alert('Không thể gửi lại', result.message);
+    }
   };
 
   const handleGoogleLogin = async () => {
@@ -76,6 +91,27 @@ export default function LoginScreen() {
               <View style={styles.errorBox}>
                 <Ionicons name="alert-circle" size={16} color={colors.status.error} />
                 <Text style={styles.errorText}>{authError}</Text>
+              </View>
+            ) : null}
+
+            {unverifiedEmail && !resendDone ? (
+              <TouchableOpacity
+                style={styles.resendBtn}
+                onPress={handleResendVerification}
+                disabled={loadingResend}
+                activeOpacity={0.85}
+              >
+                {loadingResend
+                  ? <ActivityIndicator color={colors.brand.primary} size="small" />
+                  : <Text style={styles.resendBtnText}>Gửi lại email xác nhận</Text>
+                }
+              </TouchableOpacity>
+            ) : null}
+
+            {resendDone ? (
+              <View style={styles.successBox}>
+                <Ionicons name="checkmark-circle" size={16} color={colors.status.success ?? '#22C55E'} />
+                <Text style={styles.successText}>Đã gửi email xác nhận. Vui lòng kiểm tra hộp thư của bạn.</Text>
               </View>
             ) : null}
 
@@ -255,6 +291,31 @@ const styles = StyleSheet.create({
   },
   errorText: {
     color: colors.status.error,
+    fontSize: 13,
+    flex: 1,
+  },
+  resendBtn: {
+    alignSelf: 'flex-start',
+    marginBottom: spacing.md,
+    marginTop: -4,
+  },
+  resendBtnText: {
+    color: colors.brand.primary,
+    fontSize: 13,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
+  successBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#22C55E20',
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    marginBottom: spacing.md,
+    gap: 8,
+  },
+  successText: {
+    color: colors.status.success ?? '#22C55E',
     fontSize: 13,
     flex: 1,
   },
