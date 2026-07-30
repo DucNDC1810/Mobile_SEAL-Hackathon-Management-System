@@ -1,9 +1,12 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAuth } from '../contexts/AuthContext';
-import { View, ActivityIndicator } from 'react-native';
+import { UnreadProvider } from '../contexts/UnreadContext';
+import { View, ActivityIndicator, AppState } from 'react-native';
 import { colors } from '../theme';
+import { requestNotificationPermission, showMessageNotification } from '../services/notificationService';
+import { connectSocket, disconnectSocket, onMessage } from '../services/socketService';
 
 // Auth screens
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -27,10 +30,40 @@ const LoadingScreen = () => (
 
 export default function RootNavigator() {
   const { user, loading, isStudent, isMentor, isAdmin } = useAuth();
+  const appState = useRef(AppState.currentState);
+
+  useEffect(() => {
+    if (!user) return;
+    requestNotificationPermission();
+
+    // Connect socket globally and listen for messages when app is backgrounded
+    connectSocket();
+    const unsub = onMessage((msg) => {
+      // Only show notification if app is in background/inactive
+      if (appState.current !== 'active') {
+        const senderName = msg.sender_id?.full_name ?? 'Tin nhắn mới';
+        showMessageNotification({
+          senderName,
+          content: msg.content,
+          contestTitle: '',
+        });
+      }
+    });
+
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      appState.current = next;
+    });
+
+    return () => {
+      unsub?.();
+      appStateSub.remove();
+    };
+  }, [user]);
 
   if (loading) return <LoadingScreen />;
 
   return (
+    <UnreadProvider>
     <NavigationContainer
       theme={{
         ...DarkTheme,
@@ -58,5 +91,6 @@ export default function RootNavigator() {
         )}
       </Stack.Navigator>
     </NavigationContainer>
+    </UnreadProvider>
   );
 }
