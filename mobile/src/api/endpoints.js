@@ -1,9 +1,9 @@
 // ─── Auth APIs ────────────────────────────────────────────────────────────────
-import apiClient from './client';
+import apiClient, { plainClient } from './client';
 
 export const authApi = {
   signIn: (email, password) =>
-    apiClient.post('/auth/signin', { email, password }),
+    plainClient.post('/auth/signin', { email, password }),
 
   signOut: () =>
     apiClient.post('/auth/signout'),
