@@ -195,7 +195,7 @@ export default function ConversationsScreen({ navigation }) {
               key={c._id ?? i}
               item={c}
               currentUserId={user?._id}
-              onPress={() => navigation.navigate('Chat', {
+              onPress={() => navigation.navigate('ChatRoom', {
                 contestId: c._contestId,
                 roundId:   c._roundId,
                 teamId:    c._teamId,

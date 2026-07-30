@@ -19,7 +19,7 @@ function ChatStack() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="Conversations" component={ConversationsScreen} />
-      <Stack.Screen name="Chat"          component={ChatScreen} />
+      <Stack.Screen name="ChatRoom"       component={ChatScreen} />
     </Stack.Navigator>
   );
 }
