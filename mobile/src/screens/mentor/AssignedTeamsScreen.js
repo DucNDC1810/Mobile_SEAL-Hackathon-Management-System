@@ -19,18 +19,9 @@ const STATUS_MAP = {
   DISQUALIFIED:     { label: 'Bị loại',     color: colors.status.error },
 };
 
-// Trạng thái phân công mentor–đội (khác trạng thái của đội thi ở trên):
-// pending = mentor chưa xác nhận nhận đội này, accepted = đã nhận, declined = đã từ chối.
-const ASSIGNMENT_STATUS_MAP = {
-  pending:  { label: 'Chờ xác nhận', color: colors.status.warning },
-  accepted: { label: 'Đang hỗ trợ',  color: colors.status.success },
-  declined: { label: 'Đã từ chối',   color: colors.status.error },
-};
-
 function TeamCard({ assignment, onPress }) {
   const team   = assignment.team_id;
   const status = STATUS_MAP[team?.status] ?? { label: team?.status, color: colors.text.muted };
-  const assignmentStatus = ASSIGNMENT_STATUS_MAP[assignment.status] ?? ASSIGNMENT_STATUS_MAP.accepted;
   const initial = (team?.team_name ?? '?').charAt(0).toUpperCase();
 
   return (
@@ -53,9 +44,6 @@ function TeamCard({ assignment, onPress }) {
       </View>
 
       <View style={{ alignItems: 'flex-end', gap: 6 }}>
-        <View style={[styles.statusBadge, { backgroundColor: assignmentStatus.color + '20' }]}>
-          <Text style={[styles.statusText, { color: assignmentStatus.color }]}>{assignmentStatus.label}</Text>
-        </View>
         <View style={[styles.statusBadge, { backgroundColor: status.color + '20' }]}>
           <Text style={[styles.statusText, { color: status.color }]}>{status.label}</Text>
         </View>
