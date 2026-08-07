@@ -21,8 +21,11 @@ export const handleCreateContest = async (req, res) => {
       start_date,
       end_date,
       registration_deadline,
+      kickoff_date,
       auto_close,
       max_teams_per_pool,
+      min_team_size,
+      max_team_size,
     } = req.body;
 
     // Validate required fields
@@ -41,8 +44,11 @@ export const handleCreateContest = async (req, res) => {
       start_date,
       end_date,
       registration_deadline,
+      kickoff_date,
       auto_close,
       max_teams_per_pool,
+      min_team_size,
+      max_team_size,
       created_by,
     });
 

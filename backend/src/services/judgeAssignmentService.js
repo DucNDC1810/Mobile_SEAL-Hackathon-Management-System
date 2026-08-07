@@ -1,7 +1,6 @@
 import crypto from "crypto";
 import mongoose from "mongoose";
 import JudgeAssignment from "../models/JudgeAssignment.js";
-import MentorAssignment from "../models/MentorAssignment.js";
 import Invitation from "../models/Invitation.js";
 import Contest from "../models/Contest.js";
 import User from "../models/User.js";
@@ -67,17 +66,6 @@ export const assignJudge = async ({
       if (!hasEligibleRole) {
         const err = new Error(
           `Tài khoản ${existingUser.full_name || email} (${email}) là tài khoản Thí sinh (Contestant) — Không thể phân công làm Giám khảo!`
-        );
-        err.statusCode = 400; throw err;
-      }
-
-      // Chặn mentor chấm bảng mình đang mentor
-      const isMentorOfThisPool = await MentorAssignment.exists({
-        mentor_id: existingUser._id, contest_id, round_id, board_id: pool_id,
-      });
-      if (isMentorOfThisPool) {
-        const err = new Error(
-          `${existingUser.full_name || email} đang là Mentor của bảng này — không thể vừa mentor vừa chấm cùng bảng`
         );
         err.statusCode = 400; throw err;
       }
@@ -156,7 +144,13 @@ export const assignJudge = async ({
       assigned_by,
     });
 
-    sendJudgeInvitationEmail(email, contest.title, rawToken).catch(e =>
+    sendJudgeInvitationEmail(email, contest.title, rawToken, {
+      kickoffDate: contest.kickoff_date,
+      startDate: contest.start_date,
+      endDate: contest.end_date,
+      roundName: round.name,
+      roundStart: round.start_time,
+    }).catch(e =>
       console.error("[sendJudgeInvitationEmail]", e)
     );
 
@@ -185,17 +179,6 @@ export const assignJudge = async ({
   );
   if (!hasEligibleRole) {
     const err = new Error(`Tài khoản ${judge.full_name || judge.email} là tài khoản Thí sinh (Contestant) — Không thể phân công làm Giám khảo!`);
-    err.statusCode = 400; throw err;
-  }
-
-  // Chặn mentor chấm bảng mình đang mentor
-  const isMentorOfThisPool = await MentorAssignment.exists({
-    mentor_id: judge_id, contest_id, round_id, board_id: pool_id,
-  });
-  if (isMentorOfThisPool) {
-    const err = new Error(
-      `${judge.full_name} đang là Mentor của bảng này — không thể vừa mentor vừa chấm cùng bảng`
-    );
     err.statusCode = 400; throw err;
   }
 

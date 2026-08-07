@@ -50,6 +50,13 @@ function getRoundName(assignment) {
   return assignment.contest_id?.rounds?.find(r => r._id?.toString() === roundId)?.name ?? '—';
 }
 
+// Trạng thái phân công mentor–đội: pending = chưa xác nhận, accepted = đã nhận, declined = đã từ chối.
+const ASSIGNMENT_STATUS_MAP = {
+  pending:  { label: 'Chờ xác nhận', color: '#F59E0B' },
+  accepted: { label: 'Đang hỗ trợ',  color: '#10B981' },
+  declined: { label: 'Đã từ chối',   color: '#EF4444' },
+};
+
 export default function MentorHomeScreen() {
   const { user } = useAuth();
   const [assignments, setAssignments] = useState([]);
@@ -149,22 +156,25 @@ export default function MentorHomeScreen() {
                     </View>
                   </View>
 
-                  {contestAssignments.map((a) => (
-                    <View key={a._id} style={styles.assignmentRow}>
-                      <View style={styles.assignmentDot} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.assignmentTeam}>
-                          {a.team_id?.team_name ?? 'Nhóm không tên'}
-                        </Text>
-                        <Text style={styles.assignmentRound}>
-                          {getRoundName(a)} · Phân công {dayjs(a.assigned_at).format('DD/MM/YYYY')}
-                        </Text>
+                  {contestAssignments.map((a) => {
+                    const assignmentStatus = ASSIGNMENT_STATUS_MAP[a.status] ?? ASSIGNMENT_STATUS_MAP.accepted;
+                    return (
+                      <View key={a._id} style={styles.assignmentRow}>
+                        <View style={styles.assignmentDot} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.assignmentTeam}>
+                            {a.team_id?.team_name ?? 'Nhóm không tên'}
+                          </Text>
+                          <Text style={styles.assignmentRound}>
+                            {getRoundName(a)} · Phân công {dayjs(a.assigned_at).format('DD/MM/YYYY')}
+                          </Text>
+                        </View>
+                        <View style={[styles.statusBadge, { backgroundColor: assignmentStatus.color + '20' }]}>
+                          <Text style={[styles.statusBadgeText, { color: assignmentStatus.color }]}>{assignmentStatus.label}</Text>
+                        </View>
                       </View>
-                      <View style={[styles.statusBadge, { backgroundColor: '#10B98120' }]}>
-                        <Text style={[styles.statusBadgeText, { color: '#10B981' }]}>Active</Text>
-                      </View>
-                    </View>
-                  ))}
+                    );
+                  })}
                 </View>
               );
             })}

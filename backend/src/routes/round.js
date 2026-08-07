@@ -2,6 +2,7 @@ import { Router } from "express";
 import Round from "../models/Round.js";
 import Criteria from "../models/Criteria.js";
 import JudgeAssignment from "../models/JudgeAssignment.js";
+import MentorAssignment from "../models/MentorAssignment.js";
 import User from "../models/User.js";
 import AuditLog from "../models/AuditLog.js";
 import Score from "../models/Score.js";
@@ -9,6 +10,8 @@ import Team from "../models/Team.js";
 import { sendNotification } from "../services/notification.js";
 import { authenticate, authorize } from "../middlewares/authMiddleware.js";
 import { notifyJudgeAssignedToRound } from "../services/notificationService.js";
+import { sendScheduleChangeEmail } from "../services/emailService.js";
+import { createScheduleChangeResponses } from "../services/scheduleChangeService.js";
 
 const router = Router();
 
@@ -313,6 +316,7 @@ router.delete("/:round_id/criteria/:criteria_id", authenticate, authorize("admin
 router.patch("/:round_id/activate", authenticate, authorize("admin"), async (req, res, next) => {
   try {
     const { round_id } = req.params;
+    const { reason } = req.body;
 
     // Check criteria weight (standalone Criteria collection — dùng chung cho cả 2 trường hợp)
     const criteriaList = await Criteria.find({ round_id });
@@ -333,11 +337,31 @@ router.patch("/:round_id/activate", authenticate, authorize("admin"), async (req
     const Contest = (await import("../models/Contest.js")).default;
 
     let beforeActive;
+    let scheduledStart = null;
+    let isEarly = false;
+    let affectedContestId = null;
+
+    if (round) {
+      scheduledStart = round.round_start;
+    } else {
+      const embeddedLookup = await Contest.findOne({ "rounds._id": round_id }).select("rounds.$");
+      scheduledStart = embeddedLookup?.rounds?.[0]?.start_time || null;
+    }
+    const now = new Date();
+    isEarly = !!scheduledStart && now < new Date(scheduledStart);
+    if (isEarly && (!reason || !reason.trim())) {
+      return res.status(400).json({
+        error: "EARLY_ACTIVATION_REASON_REQUIRED",
+        message: `Vòng thi dự kiến bắt đầu lúc ${new Date(scheduledStart).toLocaleString("vi-VN")}. Kích hoạt sớm hơn lịch chỉ áp dụng khi dời lịch/sự cố — vui lòng nhập lý do.`,
+        scheduled_start_time: scheduledStart,
+      });
+    }
 
     if (round) {
       // Standalone Round document
       beforeActive = round.is_active;
       round.is_active = true;
+      round.early_activation_reason = isEarly ? reason.trim() : null;
       await round.save();
 
       // Also update Contest embedded round is_active status.
@@ -372,6 +396,7 @@ router.patch("/:round_id/activate", authenticate, authorize("admin"), async (req
             }
           }
           await contest.save();
+          affectedContestId = contest._id;
         }
       }
     } else {
@@ -387,6 +412,7 @@ router.patch("/:round_id/activate", authenticate, authorize("admin"), async (req
 
       beforeActive = embeddedRound.is_active;
       embeddedRound.is_active = true;
+      embeddedRound.early_activation_reason = isEarly ? reason.trim() : null;
 
       const now = new Date();
       embeddedRound.problem_released_at = now;
@@ -399,15 +425,28 @@ router.patch("/:round_id/activate", authenticate, authorize("admin"), async (req
         }
       }
       await contest.save();
+      affectedContestId = contest._id;
+    }
+
+    // Kích hoạt sớm hơn lịch: lùi Contest.end_date đúng bằng độ lệch, giữ nguyên tổng thời lượng cuộc thi
+    let newEndDate = null;
+    if (isEarly && affectedContestId) {
+      const offsetMs = new Date(scheduledStart).getTime() - now.getTime();
+      const contestToShift = await Contest.findById(affectedContestId).select("end_date");
+      if (contestToShift?.end_date) {
+        newEndDate = new Date(contestToShift.end_date.getTime() - offsetMs);
+        contestToShift.end_date = newEndDate;
+        await contestToShift.save();
+      }
     }
 
     // Create AuditLog
     await AuditLog.create({
       entity_type: "Round",
       entity_id: round_id,
-      action: "ROUND_ACTIVATED",
+      action: isEarly ? "ROUND_EARLY_ACTIVATION" : "ROUND_ACTIVATED",
       old_value: { is_active: beforeActive },
-      new_value: { is_active: true },
+      new_value: { is_active: true, early_activation_reason: isEarly ? reason.trim() : null, contest_end_date_shifted_to: newEndDate },
       performed_by: req.user?._id || null,
       performed_at: new Date(),
       // Compatibility fields
@@ -419,15 +458,87 @@ router.patch("/:round_id/activate", authenticate, authorize("admin"), async (req
       after: { is_active: true },
     });
 
+    // Nếu kích hoạt lệch lịch (dời lịch/sự cố): gửi email thông báo cho contestant + mentor/judge liên quan
+    if (isEarly) {
+      notifyEarlyActivation({ round_id, reason: reason.trim(), scheduledStart, newEndDate }).catch((e) =>
+        console.error("[round activate scheduleChangeEmail]", e)
+      );
+    }
+
     return res.status(200).json({
       success: true,
       round_id,
-      is_active: true
+      is_active: true,
+      contest_end_date_shifted_to: newEndDate,
     });
   } catch (error) {
     next(error);
   }
 });
+
+// Gửi email thông báo thay đổi lịch. Contestant chỉ nhận thông báo (không có lựa chọn nào để
+// bấm — họ không thể "rút khỏi round của chính đội mình"). Judge/mentor nhận email có 2 nút
+// Xác nhận (vẫn tham gia) / Từ chối (rút khỏi round, admin được báo tìm người thay).
+const notifyEarlyActivation = async ({ round_id, reason, scheduledStart, newEndDate }) => {
+  const Contest = (await import("../models/Contest.js")).default;
+  const round = await Round.findById(round_id);
+  const contest = round
+    ? await Contest.findById(round.contest_id)
+    : await Contest.findOne({ "rounds._id": round_id });
+  if (!contest) return;
+  const roundName = round ? round.name : contest.rounds.id(round_id)?.name;
+
+  // 1. Contestant — thông báo thuần, không có nút hành động.
+  const teams = await Team.find({ contest_id: contest._id, status: { $in: ["ACTIVE", "CONFIRMED"] } })
+    .select("members.email")
+    .lean();
+  const contestantEmails = new Set();
+  for (const t of teams) {
+    for (const m of t.members || []) {
+      if (m.email) contestantEmails.add(m.email);
+    }
+  }
+  await Promise.all(
+    [...contestantEmails].map((email) =>
+      sendScheduleChangeEmail(email, contest.title, roundName || "", scheduledStart, reason, newEndDate).catch((e) =>
+        console.error(`[notifyEarlyActivation] failed for ${email}:`, e.message)
+      )
+    )
+  );
+
+  // 2. Judge/mentor — mỗi người nhận 1 token riêng gắn với đúng assignment của họ,
+  // để khi "Từ chối" hệ thống biết chính xác assignment nào cần xóa.
+  const judgeAssignments = await JudgeAssignment.find({ round_id }).populate("judge_id", "email");
+  const mentorAssignments = await MentorAssignment.find({ round_id, status: "accepted" }).populate("mentor_id", "email");
+
+  const recipients = [];
+  for (const a of judgeAssignments) {
+    if (a.judge_id?.email) {
+      recipients.push({ role: "judge", email: a.judge_id.email, assignment_id: a._id, assignment_model: "JudgeAssignment" });
+    }
+  }
+  for (const a of mentorAssignments) {
+    if (a.mentor_id?.email) {
+      recipients.push({ role: "mentor", email: a.mentor_id.email, assignment_id: a._id, assignment_model: "MentorAssignment" });
+    }
+  }
+  if (recipients.length === 0) return;
+
+  const responses = await createScheduleChangeResponses({
+    contestId: contest._id,
+    roundId: round_id,
+    reason,
+    recipients,
+  });
+
+  await Promise.all(
+    responses.map(({ email, token }) =>
+      sendScheduleChangeEmail(email, contest.title, roundName || "", scheduledStart, reason, newEndDate, token).catch((e) =>
+        console.error(`[notifyEarlyActivation] failed for ${email}:`, e.message)
+      )
+    )
+  );
+};
 
 // PATCH /api/round/:round_id
 router.patch("/:round_id", authenticate, authorize("admin"), async (req, res, next) => {
