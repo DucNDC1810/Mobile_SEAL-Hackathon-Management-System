@@ -3,6 +3,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const BASE_URL = 'https://seal-hackathon-management-system-t7vv.onrender.com';
 
+// Plain client without auth interceptors — use for login/signup so 401 errors aren't swallowed
+export const plainClient = axios.create({
+  baseURL: `${BASE_URL}/api`,
+  timeout: 15000,
+  headers: { 'Content-Type': 'application/json' },
+});
+
 // Minimal event bus to signal AuthContext to force logout
 const _listeners = {};
 export const authEvents = {
