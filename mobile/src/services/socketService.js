@@ -9,11 +9,17 @@ export const connectSocket = async () => {
 
   const token = await AsyncStorage.getItem('accessToken');
   socket = io(BASE_URL, {
-    transports: ['websocket'],
+    // Cho phép fallback polling trước rồi upgrade — websocket-only dễ fail
+    // khi Render (free tier) vừa cold-start và chưa sẵn sàng nâng cấp giao thức.
+    transports: ['polling', 'websocket'],
     auth: { token },
+    // Render free tier có thể mất 30-60s để tỉnh dậy sau khi "ngủ" do idle —
+    // timeout mặc định (20s) và retry ngắn dễ bỏ cuộc giữa chừng cold-start.
+    timeout: 45000,
     reconnection: true,
-    reconnectionAttempts: 5,
+    reconnectionAttempts: 10,
     reconnectionDelay: 1000,
+    reconnectionDelayMax: 10000,
   });
 
   socket.on('connect', () => {
@@ -24,6 +30,12 @@ export const connectSocket = async () => {
   });
   socket.on('connect_error', (err) => {
     console.warn('[Socket] Connection error:', err.message);
+  });
+  socket.on('reconnect_attempt', (attempt) => {
+    console.log('[Socket] Reconnect attempt', attempt);
+  });
+  socket.on('reconnect_failed', () => {
+    console.warn('[Socket] Reconnect failed — giving up after max attempts');
   });
 
   return socket;

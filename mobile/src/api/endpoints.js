@@ -58,8 +58,20 @@ export const chatApi = {
       params: { page, limit },
     }),
 
-  sendMessage: (contestId, roundId, teamId, mentorId, content) =>
-    apiClient.post(`/chat/${contestId}/${roundId}/${teamId}/${mentorId}/messages`, { content }),
+  // `images` là mảng { uri, name, type } lấy từ expo-image-picker — gửi kèm dạng multipart.
+  sendMessage: (contestId, roundId, teamId, mentorId, content, images = []) => {
+    if (images.length === 0) {
+      return apiClient.post(`/chat/${contestId}/${roundId}/${teamId}/${mentorId}/messages`, { content });
+    }
+    const form = new FormData();
+    form.append('content', content ?? '');
+    images.forEach((img) => {
+      form.append('files', { uri: img.uri, name: img.name, type: img.type });
+    });
+    return apiClient.post(`/chat/${contestId}/${roundId}/${teamId}/${mentorId}/messages`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 
   checkStatus: (contestId, roundId) =>
     apiClient.get(`/chat/${contestId}/${roundId}/status`),

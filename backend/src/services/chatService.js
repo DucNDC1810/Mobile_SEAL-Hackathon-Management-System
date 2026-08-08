@@ -119,7 +119,7 @@ export const getTeamMentors = async (teamId, userId) => {
         mentor_id: a.mentor_id._id,
       })
         .sort({ created_at: -1 })
-        .select("content created_at sender_id");
+        .select("content created_at sender_id attachments");
 
       const unreadCount = userId
         ? await ChatMessage.countDocuments({
@@ -177,7 +177,7 @@ export const getMentorConversations = async (mentorId) => {
           mentor_id: mentorId,
         })
           .sort({ created_at: -1 })
-          .select("content created_at sender_id");
+          .select("content created_at sender_id attachments");
 
         const unreadCount = await ChatMessage.countDocuments({
           contest_id: contest._id,

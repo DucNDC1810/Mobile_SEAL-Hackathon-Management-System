@@ -11,6 +11,18 @@ import { chatApi } from '../../api/endpoints';
 import { colors, spacing, radius, typography } from '../../theme';
 import dayjs from 'dayjs';
 
+// Tin nhắn có thể chỉ gồm file đính kèm (content rỗng "") — không được coi là "chưa có tin nhắn".
+function previewLastMessage(lastMsg) {
+  if (!lastMsg) return 'Chưa có tin nhắn';
+  if (lastMsg.content) return lastMsg.content;
+  if (lastMsg.attachments?.length) {
+    const first = lastMsg.attachments[0];
+    const isImage = first.mime_type?.startsWith('image/');
+    return isImage ? '📷 Hình ảnh' : `📎 ${first.original_name ?? 'Tệp đính kèm'}`;
+  }
+  return 'Chưa có tin nhắn';
+}
+
 function ConversationItem({ item, onPress }) {
   const otherName = item.mentor_name ?? item.team_name ?? item.name ?? 'Chat';
   const lastMsg   = item.last_message ?? item.lastMessage;
@@ -46,7 +58,7 @@ function ConversationItem({ item, onPress }) {
         </View>
         <View style={styles.convBottomRow}>
           <Text style={[styles.convLastMsg, hasUnread && styles.convLastMsgUnread]} numberOfLines={1}>
-            {lastMsg?.content || 'Chưa có tin nhắn'}
+            {previewLastMessage(lastMsg)}
           </Text>
           {hasUnread && (
             <View style={styles.unreadBadge}>

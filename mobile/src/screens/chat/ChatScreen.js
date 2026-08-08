@@ -2,10 +2,11 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
   StyleSheet, KeyboardAvoidingView, Platform, StatusBar,
-  ActivityIndicator, Keyboard,
+  ActivityIndicator, Keyboard, Image, Modal, Pressable, Dimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../contexts/AuthContext';
 import { chatApi } from '../../api/endpoints';
 import {
@@ -16,7 +17,7 @@ import { colors, spacing, radius, typography } from '../../theme';
 import dayjs from 'dayjs';
 
 // ─── Message bubble ────────────────────────────────────────────────────────────
-function MessageBubble({ msg, isMine, showAvatar, avatarInitial }) {
+function MessageBubble({ msg, isMine, showAvatar, avatarInitial, onPreviewImage }) {
   const time = dayjs(msg.created_at).format('HH:mm');
   return (
     <View style={[styles.bubbleRow, isMine ? styles.bubbleRowRight : styles.bubbleRowLeft]}>
@@ -31,6 +32,8 @@ function MessageBubble({ msg, isMine, showAvatar, avatarInitial }) {
         <View style={[
           styles.bubble,
           isMine ? styles.bubbleSent : styles.bubbleReceived,
+          // Bubble ảnh dùng padding mỏng hơn để ảnh sát viền, giống trải nghiệm web
+          msg.attachments?.some(a => a.mime_type?.startsWith('image/')) && !msg.content && styles.bubbleImageOnly,
         ]}>
           {msg.content ? (
             <Text style={isMine ? styles.bubbleTextSent : styles.bubbleTextReceived}>
@@ -38,14 +41,29 @@ function MessageBubble({ msg, isMine, showAvatar, avatarInitial }) {
             </Text>
           ) : null}
           {/* Attachments */}
-          {msg.attachments?.map((a, i) => (
-            <View key={i} style={styles.attachment}>
-              <Ionicons name="attach-outline" size={14} color={isMine ? '#fff' : colors.text.secondary} />
-              <Text style={[styles.attachName, isMine ? { color: 'rgba(255,255,255,0.85)' } : {}]} numberOfLines={1}>
-                {a.original_name}
-              </Text>
-            </View>
-          ))}
+          {msg.attachments?.map((a, i) => {
+            const isImage = a.mime_type?.startsWith('image/');
+            if (isImage) {
+              return (
+                <TouchableOpacity
+                  key={a._id ?? i}
+                  onPress={() => onPreviewImage?.(a.url)}
+                  activeOpacity={0.9}
+                  style={msg.content ? { marginTop: 8 } : null}
+                >
+                  <Image source={{ uri: a.url }} style={styles.attachImage} resizeMode="cover" />
+                </TouchableOpacity>
+              );
+            }
+            return (
+              <View key={a._id ?? i} style={styles.attachment}>
+                <Ionicons name="attach-outline" size={14} color={isMine ? '#fff' : colors.text.secondary} />
+                <Text style={[styles.attachName, isMine ? { color: 'rgba(255,255,255,0.85)' } : {}]} numberOfLines={1}>
+                  {a.original_name}
+                </Text>
+              </View>
+            );
+          })}
         </View>
         <Text style={[styles.msgTime, isMine ? { textAlign: 'right' } : {}]}>{time}</Text>
       </View>
@@ -53,6 +71,27 @@ function MessageBubble({ msg, isMine, showAvatar, avatarInitial }) {
       {/* Spacer for sent side */}
       {isMine && <View style={{ width: 8 }} />}
     </View>
+  );
+}
+
+// ─── Full-screen image preview ──────────────────────────────────────────────────
+function ImagePreviewModal({ uri, onClose }) {
+  const { width, height } = Dimensions.get('window');
+  return (
+    <Modal visible={!!uri} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.previewBackdrop} onPress={onClose}>
+        <TouchableOpacity style={styles.previewCloseBtn} onPress={onClose} hitSlop={12}>
+          <Ionicons name="close" size={28} color="#fff" />
+        </TouchableOpacity>
+        {uri ? (
+          <Image
+            source={{ uri }}
+            style={{ width, height: height * 0.8 }}
+            resizeMode="contain"
+          />
+        ) : null}
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -87,12 +126,14 @@ export default function ChatScreen({ route, navigation }) {
   const { contestId, roundId, teamId, mentorId, chatName, contestTitle } = route.params;
   const { user } = useAuth();
 
-  const [messages,    setMessages]    = useState([]);
-  const [inputText,   setInputText]   = useState('');
-  const [loading,     setLoading]     = useState(true);
-  const [sending,     setSending]     = useState(false);
-  const [typingUsers, setTypingUsers] = useState([]);
-  const [chatOpen,    setChatOpen]    = useState(true);
+  const [messages,      setMessages]      = useState([]);
+  const [inputText,     setInputText]     = useState('');
+  const [loading,       setLoading]       = useState(true);
+  const [sending,       setSending]       = useState(false);
+  const [typingUsers,   setTypingUsers]   = useState([]);
+  const [chatOpen,      setChatOpen]      = useState(true);
+  const [pendingImage,  setPendingImage]  = useState(null); // { uri, name, type } chọn nhưng chưa gửi
+  const [previewUri,    setPreviewUri]    = useState(null); // ảnh đang xem full-screen
 
   const flatListRef  = useRef(null);
   const typingTimer  = useRef(null);
@@ -155,17 +196,23 @@ export default function ChatScreen({ route, navigation }) {
     };
   }, [contestId, roundId, teamId, mentorId]);
 
-  // ─── Send message ──────────────────────────────────────────────────────────
+  // ─── Send message (text và/hoặc ảnh) ────────────────────────────────────────
   const sendMessage = useCallback(async () => {
     const text = inputText.trim();
-    if (!text || sending) return;
+    const image = pendingImage;
+    if (!text && !image) return;
+    if (sending) return;
     setSending(true);
     // Clear input via ref (uncontrolled) to avoid iOS autocorrect interference
     inputRef.current?.clear();
     setInputText('');
+    setPendingImage(null);
     Keyboard.dismiss();
     try {
-      const res = await chatApi.sendMessage(contestId, roundId, teamId, mentorId, text);
+      const res = await chatApi.sendMessage(
+        contestId, roundId, teamId, mentorId, text,
+        image ? [image] : []
+      );
       const newMsg = res.data?.data;
       if (newMsg) {
         setMessages(prev => {
@@ -178,10 +225,29 @@ export default function ChatScreen({ route, navigation }) {
       console.warn('[Chat] send error', e);
       inputRef.current?.setNativeProps({ text });
       setInputText(text);
+      setPendingImage(image);
     } finally {
       setSending(false);
     }
-  }, [inputText, sending, contestId, roundId, teamId, mentorId]);
+  }, [inputText, pendingImage, sending, contestId, roundId, teamId, mentorId]);
+
+  // ─── Chọn ảnh từ thư viện ───────────────────────────────────────────────────
+  const pickImage = useCallback(async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      return; // người dùng từ chối quyền — im lặng bỏ qua, không chặn luồng chat
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.7,
+      allowsEditing: false,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const name = asset.fileName ?? asset.uri.split('/').pop() ?? `photo_${Date.now()}.jpg`;
+    const type = asset.mimeType ?? 'image/jpeg';
+    setPendingImage({ uri: asset.uri, name, type });
+  }, []);
 
   // ─── Typing emit ───────────────────────────────────────────────────────────
   const handleTyping = useCallback((text) => {
@@ -214,6 +280,7 @@ export default function ChatScreen({ route, navigation }) {
           isMine={isMine}
           showAvatar={!prevIsSame || showDate}
           avatarInitial={avatarInitial}
+          onPreviewImage={setPreviewUri}
         />
       </>
     );
@@ -277,10 +344,27 @@ export default function ChatScreen({ route, navigation }) {
           />
         )}
 
+        {/* Ảnh đã chọn, chờ gửi */}
+        {chatOpen && pendingImage && (
+          <View style={styles.pendingImageBar}>
+            <Image source={{ uri: pendingImage.uri }} style={styles.pendingImageThumb} />
+            <TouchableOpacity
+              style={styles.pendingImageRemove}
+              onPress={() => setPendingImage(null)}
+              hitSlop={8}
+            >
+              <Ionicons name="close-circle" size={22} color={colors.status.error} />
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Input bar */}
         <View style={styles.inputBar}>
           {chatOpen ? (
             <>
+              <TouchableOpacity style={styles.attachBtn} onPress={pickImage} activeOpacity={0.7}>
+                <Ionicons name="image-outline" size={22} color={colors.text.secondary} />
+              </TouchableOpacity>
               <TextInput
                 ref={inputRef}
                 style={styles.input}
@@ -297,9 +381,9 @@ export default function ChatScreen({ route, navigation }) {
                 textContentType="none"
               />
               <TouchableOpacity
-                style={[styles.sendBtn, (!inputText.trim() || sending) && styles.sendBtnDisabled]}
+                style={[styles.sendBtn, (!inputText.trim() && !pendingImage || sending) && styles.sendBtnDisabled]}
                 onPress={sendMessage}
-                disabled={!inputText.trim() || sending}
+                disabled={(!inputText.trim() && !pendingImage) || sending}
                 activeOpacity={0.8}
               >
                 {sending ? (
@@ -317,6 +401,8 @@ export default function ChatScreen({ route, navigation }) {
           )}
         </View>
       </KeyboardAvoidingView>
+
+      <ImagePreviewModal uri={previewUri} onClose={() => setPreviewUri(null)} />
     </View>
   );
 }
@@ -372,6 +458,11 @@ const styles = StyleSheet.create({
     marginTop: 4, opacity: 0.9,
   },
   attachName: { color: colors.text.secondary, fontSize: 12, flex: 1 },
+  bubbleImageOnly: { padding: 4 },
+  attachImage: {
+    width: 220, height: 220, borderRadius: 14,
+    backgroundColor: colors.bg.elevated,
+  },
   msgTime: { ...typography.caption, marginTop: 2, paddingHorizontal: 4 },
   dateSep: {
     flexDirection: 'row', alignItems: 'center',
@@ -402,6 +493,28 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.4, shadowRadius: 4, elevation: 4,
   },
   sendBtnDisabled: { opacity: 0.4 },
+  attachBtn: {
+    width: 42, height: 42, borderRadius: 21,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  pendingImageBar: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: spacing.md, paddingTop: spacing.sm,
+    backgroundColor: colors.bg.secondary,
+  },
+  pendingImageThumb: {
+    width: 64, height: 64, borderRadius: 10,
+    backgroundColor: colors.bg.elevated,
+  },
+  pendingImageRemove: { marginLeft: -12, marginTop: -36 },
+  previewBackdrop: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  previewCloseBtn: {
+    position: 'absolute', top: 52, right: spacing.lg, zIndex: 1,
+    padding: 8,
+  },
   closedBar: {
     flex: 1, flexDirection: 'row', alignItems: 'center',
     justifyContent: 'center', gap: 8,
